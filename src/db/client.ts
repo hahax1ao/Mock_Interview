@@ -1,0 +1,52 @@
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import * as schema from "./schema";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+const databasePath = join(process.cwd(), "data", "baoyan.db");
+mkdirSync(dirname(databasePath), { recursive: true });
+
+const client = createClient({ url: `file:${databasePath}` });
+export const db = drizzle(client, { schema });
+
+let initialized: Promise<void> | undefined;
+
+export function initDatabase() {
+  initialized ??= (async () => {
+    await client.execute("PRAGMA foreign_keys = ON");
+    await client.executeMultiple(`
+      CREATE TABLE IF NOT EXISTS materials (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, mime_type TEXT NOT NULL,
+        file_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ready', created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS material_chunks (
+        id TEXT PRIMARY KEY, material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+        source TEXT NOT NULL, page INTEGER NOT NULL, text TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS profile_facts (
+        id TEXT PRIMARY KEY, material_id TEXT REFERENCES materials(id) ON DELETE CASCADE,
+        field TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS interviews (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, duration INTEGER NOT NULL, focus TEXT NOT NULL,
+        pressure TEXT NOT NULL, material_ids TEXT NOT NULL, plan TEXT NOT NULL,
+        started_at INTEGER, finished_at INTEGER, review_lease_until INTEGER, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS interview_events (
+        id TEXT PRIMARY KEY, interview_id TEXT NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+        type TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS review_reports (
+        id TEXT PRIMARY KEY, interview_id TEXT NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+        status TEXT NOT NULL, report TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+    `);
+    try {
+      await client.execute("ALTER TABLE interviews ADD COLUMN review_lease_until INTEGER");
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
+    }
+  })();
+  return initialized;
+}

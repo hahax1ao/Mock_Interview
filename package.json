@@ -1,0 +1,53 @@
+{
+  "name": "baoyan-interview-agent",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "next build",
+    "start": "tsx server.ts",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@libsql/client": "latest",
+    "drizzle-orm": "latest",
+    "mammoth": "latest",
+    "next": "latest",
+    "openai": "latest",
+    "pdf-parse": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "tesseract.js": "latest",
+    "ws": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@esbuild/win32-x64": "^0.28.1",
+    "@libsql/win32-x64-msvc": "^0.5.29",
+    "@next/swc-win32-x64-msvc": "^16.2.10",
+    "@playwright/test": "latest",
+    "@rolldown/binding-win32-x64-msvc": "^1.1.5",
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.3.2",
+    "@tailwindcss/postcss": "latest",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/ws": "latest",
+    "drizzle-kit": "latest",
+    "eslint": "latest",
+    "eslint-config-next": "latest",
+    "jsdom": "latest",
+    "lightningcss-win32-x64-msvc": "^1.32.0",
+    "tailwindcss": "latest",
+    "tsx": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "latest"
+  }
+}

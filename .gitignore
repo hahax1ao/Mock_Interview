@@ -1,0 +1,17 @@
+node_modules/
+.npm-cache/
+.next/
+coverage/
+playwright-report/
+test-results/
+data/
+uploads/
+output/
+.env
+.env.local
+*.env
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.tsbuildinfo
