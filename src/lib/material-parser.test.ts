@@ -16,11 +16,18 @@ describe("profile extraction", () => {
         "竞赛经历：电子设计竞赛省一等奖",
         "专业技能：MATLAB、Verilog、Python",
       ].join("\n"),
-    }], "resume.md");
+    }], "resume.md", "m1");
 
     expect(new Set(facts.map((fact) => fact.field))).toEqual(new Set([
       "专业排名", "平均成绩", "英语六级", "目标方向", "核心课程",
     ]));
-    expect(facts.every((fact) => fact.source === "resume.md" && fact.extractor === "local")).toBe(true);
+    expect(facts.every((fact) => (
+      fact.source === "resume.md"
+      && fact.materialId === "m1"
+      && fact.id.trim().length > 0
+      && fact.confirmed === false
+      && fact.extractor === "local"
+    ))).toBe(true);
+    expect(new Set(facts.map((fact) => fact.id))).toHaveProperty("size", facts.length);
   });
 });

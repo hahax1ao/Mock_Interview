@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { extname } from "node:path";
 import mammoth from "mammoth";
 import { createWorker } from "tesseract.js";
 import { getEmbeddedPdfWorker } from "./pdf-worker";
+import { extractLocalFacts } from "./profile-extraction";
 
 export interface ParsedPage {
   page: number;
@@ -51,4 +53,13 @@ export async function parseMaterial(name: string, mimeType: string, buffer: Buff
   throw new Error("仅支持 PDF、DOCX、JPG、PNG、TXT 和 Markdown");
 }
 
-export { extractLocalFacts as extractFacts } from "./profile-extraction";
+export function extractFacts(pages: ParsedPage[], source: string, materialId: string) {
+  return extractLocalFacts(pages, source).map((fact) => ({
+    ...fact,
+    id: randomUUID(),
+    materialId,
+    confirmed: false,
+  }));
+}
+
+export { extractLocalFacts } from "./profile-extraction";
