@@ -5,4 +5,7 @@ export const models = {
   englishReview: process.env.QWEN_ECONOMY_MODEL ?? "qwen3.5-flash",
   expressionReview: process.env.QWEN_ECONOMY_MODEL ?? "qwen3.5-flash",
   synthesis: process.env.QWEN_SYNTHESIS_MODEL ?? process.env.QWEN_ECONOMY_MODEL ?? "qwen3.5-flash",
+  materialExtraction: process.env.QWEN_MATERIAL_MODEL
+    ?? process.env.QWEN_ECONOMY_MODEL
+    ?? "qwen3.5-flash",
 } as const;
