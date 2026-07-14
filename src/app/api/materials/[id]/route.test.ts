@@ -68,4 +68,4 @@ describe("DELETE material route error contract", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ deletedId: material.id, cleanupPending: true });
   });
-});
+});
