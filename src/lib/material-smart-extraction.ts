@@ -5,6 +5,14 @@ import type { EvidenceFactInput } from "./profile-extraction";
 import { qwenJson } from "./qwen";
 
 const smartFields = ["项目经历", "科研经历", "竞赛经历", "技能", "荣誉"] as const;
+const headingOnlyValues = [
+  ...smartFields,
+  "专业技能",
+  "个人技能",
+  "主要荣誉",
+  "荣誉奖项",
+  "项目经验",
+] as const;
 
 const smartFactSchema = z.object({
   field: z.enum(smartFields),
@@ -39,7 +47,7 @@ export function validateSmartEvidence(fact: SmartFact, pages: ParsedPage[]): boo
 
 const isHeadingOnly = (fact: SmartFact) => {
   const value = normalizeEvidence(fact.value).replace(/[：:]+$/u, "");
-  return smartFields.some((heading) => value === normalizeEvidence(heading));
+  return headingOnlyValues.some((heading) => value === normalizeEvidence(heading));
 };
 
 function renderPages(pages: ParsedPage[]) {

@@ -67,6 +67,42 @@ describe("smart material extraction", () => {
     await expect(extractSmartFacts(pages, "jianli.pdf", invoke)).resolves.toEqual([]);
   });
 
+  it.each([
+    "专业技能",
+    "个人技能",
+    "主要荣誉",
+    "荣誉奖项",
+    "项目经验",
+    "专业技能：",
+    "荣誉奖项:",
+    "技能",
+    "技能：",
+    "项目经历:",
+  ])("drops the common heading-only alias %s", async (value) => {
+    const invoke = async () => ({ facts: [{
+      field: "技能",
+      value,
+      evidence: value,
+      page: 3,
+      confidence: 0.8,
+    }] });
+
+    await expect(extractSmartFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toEqual([]);
+  });
+
+  it("keeps a substantive sentence that starts with a heading alias", async () => {
+    const value = "专业技能包括 SystemVerilog 与 UVM";
+    const invoke = async () => ({ facts: [{
+      field: "技能",
+      value,
+      evidence: value,
+      page: 3,
+      confidence: 0.8,
+    }] });
+
+    await expect(extractSmartFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
+  });
+
   it("rejects malformed or disallowed model fields", async () => {
     const invoke = async () => ({ facts: [{
       field: "联系方式",
@@ -85,6 +121,8 @@ describe("smart material extraction", () => {
     await extractSmartFacts(pages, "jianli.pdf", invoke);
 
     const options = invoke.mock.calls[0][0];
+    expect(options.user).toContain(pages[0].text);
+    expect(JSON.stringify(options)).not.toContain("jianli.pdf");
     expect(`${options.system}\n${options.user}`).toContain("阅读顺序");
     expect(`${options.system}\n${options.user}`).toContain("逐字证据");
     expect(`${options.system}\n${options.user}`).toContain("不得提取联系方式");
