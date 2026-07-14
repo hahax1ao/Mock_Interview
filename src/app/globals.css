@@ -97,6 +97,14 @@ input:focus, select:focus { border-color: var(--green-2); box-shadow: 0 0 0 3px 
 .drop b { margin-top: 8px; font-size: 13px; }
 .drop p { color: var(--muted); font-size: 9px; }
 .drop input { position: absolute; inset: 0; height: 100%; opacity: 0; cursor: pointer; }
+.file-controls { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.file-controls > span { padding: 5px 8px; color: #65736c; background: #edf0e8; font-size: 9px; white-space: nowrap; }
+.file-controls > span.pending { color: #6b5a16; background: #f4efcf; }
+.file-controls button { padding: 5px 8px; border: 1px solid; background: transparent; font-size: 9px; }
+.file-controls .delete-material { color: #9b3f39; border-color: #c98a85; }
+.file-controls .retry-material { color: var(--green-2); border-color: #6e9b88; }
+.file-controls button:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.file-controls button:disabled { cursor: wait; opacity: .5; }
 .file-row { grid-template-columns: 44px 1fr auto; }
 .history { max-width: 900px; }
 
@@ -191,4 +199,10 @@ input:focus, select:focus { border-color: var(--green-2); box-shadow: 0 0 0 3px 
   .hero-grid, .lower-grid, .materials-layout { grid-template-columns: 1fr; }
   header .status { display: none; }
   .room { inset: 0; }
+}
+@media (max-width: 600px) {
+  .file-row { grid-template-columns: 44px minmax(0, 1fr); align-items: start; }
+  .file-controls { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; }
+  .file-meta { min-width: 0; }
+  .file-meta b, .file-meta small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
