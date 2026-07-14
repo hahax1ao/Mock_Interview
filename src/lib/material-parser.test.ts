@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { extractFacts } from "./material-parser";
 
 describe("profile extraction", () => {
-  it("extracts the confirmed V1 profile categories locally", () => {
+  it("keeps the bounded local extractor compatibility alias", () => {
     const facts = extractFacts([{
       page: 1,
       text: [
@@ -16,12 +16,11 @@ describe("profile extraction", () => {
         "竞赛经历：电子设计竞赛省一等奖",
         "专业技能：MATLAB、Verilog、Python",
       ].join("\n"),
-    }], "resume.md", "m1");
+    }], "resume.md");
 
     expect(new Set(facts.map((fact) => fact.field))).toEqual(new Set([
       "专业排名", "平均成绩", "英语六级", "目标方向", "核心课程",
-      "项目经历", "科研经历", "竞赛经历", "技能",
     ]));
-    expect(facts.every((fact) => fact.source === "resume.md" && !fact.confirmed)).toBe(true);
+    expect(facts.every((fact) => fact.source === "resume.md" && fact.extractor === "local")).toBe(true);
   });
 });
