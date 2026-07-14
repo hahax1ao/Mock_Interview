@@ -51,7 +51,6 @@ export interface IngestionDependencies {
     | { kind: "duplicate"; material: { id: string; name: string; createdAt: number } }
   | { kind: "in_progress"; owner: { id: string; name: string; createdAt: number } }
   >;
-  commitContentHash(hash: string, materialId: string): Promise<void>;
   releaseContentHash(hash: string, materialId: string): Promise<void>;
   writeUpload(input: { materialId: string; name: string; buffer: Buffer }): Promise<string>;
   removeUpload(materialId: string): Promise<void>;
@@ -158,7 +157,6 @@ export async function ingestMaterial(
       })),
       facts: storedFacts,
     });
-    await dependencies.commitContentHash(contentHash, materialId);
 
     return {
       kind: "created",

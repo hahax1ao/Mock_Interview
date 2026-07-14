@@ -5,7 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
-import { materialChunks, materials, profileFacts } from "@/db/schema";
+import { materials, profileFacts } from "@/db/schema";
 import { chunkMaterial } from "@/domain/materials";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
 import { ingestMaterial } from "@/lib/material-ingestion";
@@ -13,7 +13,7 @@ import { parseMaterial } from "@/lib/material-parser";
 import { extractSmartFacts } from "@/lib/material-smart-extraction";
 import { extractLocalFacts } from "@/lib/profile-extraction";
 import {
-  commitMaterialHashReservation,
+  persistReservedMaterial,
   releaseMaterialHashReservation,
   reserveMaterialHash,
 } from "@/lib/material-reservations";
@@ -78,7 +78,6 @@ export async function POST(request: Request) {
         await db.update(materials).set({ contentHash }).where(eq(materials.id, id));
       },
       reserveContentHash: reserveMaterialHash,
-      commitContentHash: commitMaterialHashReservation,
       releaseContentHash: releaseMaterialHashReservation,
       writeUpload: async ({ materialId, name, buffer: contents }) => {
         const safeName = name.replace(/[^\p{L}\p{N}._-]+/gu, "_");
@@ -95,13 +94,7 @@ export async function POST(request: Request) {
       chunkMaterial,
       extractLocalFacts,
       extractSmartFacts,
-      persistCreated: async ({ material, chunks, facts }) => {
-        await db.transaction(async (tx) => {
-          await tx.insert(materials).values(material);
-          if (chunks.length) await tx.insert(materialChunks).values(chunks);
-          if (facts.length) await tx.insert(profileFacts).values(facts);
-        });
-      },
+      persistCreated: persistReservedMaterial,
       createId: randomUUID,
       now: Date.now,
     });

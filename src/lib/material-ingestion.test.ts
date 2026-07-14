@@ -26,7 +26,6 @@ function ingestionDependencies(
     listMaterials: vi.fn(async () => []),
     updateMaterialHash: vi.fn(async () => undefined),
     reserveContentHash: vi.fn(async () => ({ kind: "reserved" as const })),
-    commitContentHash: vi.fn(async () => undefined),
     releaseContentHash: vi.fn(async () => undefined),
     writeUpload: vi.fn(async ({ materialId, name }) => `uploads/${materialId}/${name}`),
     removeUpload: vi.fn(async () => undefined),
@@ -94,10 +93,6 @@ describe("material ingestion", () => {
         reservations.set(contentHash, { id: owner.materialId, name: owner.name, createdAt: owner.createdAt, state: "pending" });
         return { kind: "reserved" as const };
       }),
-      commitContentHash: vi.fn(async (contentHash, materialId) => {
-        const reservation = reservations.get(contentHash);
-        if (reservation && reservation.id === materialId) reservation.state = "committed";
-      }),
       releaseContentHash: vi.fn(async (contentHash, materialId) => {
         if (reservations.get(contentHash)?.id === materialId) reservations.delete(contentHash);
       }),
@@ -148,14 +143,12 @@ describe("material ingestion", () => {
     expect((error as AggregateError).errors).toEqual(expect.arrayContaining([original, release]));
   });
 
-  it("commits the reservation only after material persistence succeeds", async () => {
-    const order: string[] = [];
-    const deps = ingestionDependencies({
-      persistCreated: vi.fn(async () => { order.push("persist"); }),
-      commitContentHash: vi.fn(async () => { order.push("commit"); }),
-    });
-    await ingestMaterial(input, deps);
-    expect(order).toEqual(["persist", "commit"]);
+  it("returns created only after fenced persistence succeeds", async () => {
+    const persistCreated = vi.fn(async () => { throw new Error("reservation ownership lost"); });
+    const deps = ingestionDependencies({ persistCreated });
+
+    await expect(ingestMaterial(input, deps)).rejects.toThrow("reservation ownership lost");
+    expect(persistCreated).toHaveBeenCalledOnce();
   });
 
   it("releases only its owned hash reservation when ingestion fails", async () => {
