@@ -31,6 +31,7 @@ export async function qwenJson<T>(options: {
   temperature?: number;
   maxTokens?: number;
   enableThinking?: boolean;
+  timeoutMs?: number;
 }) {
   const requestBody = {
     model: options.model,
@@ -43,7 +44,10 @@ export async function qwenJson<T>(options: {
     max_tokens: options.maxTokens ?? 1_800,
     extra_body: { enable_thinking: options.enableThinking ?? false },
   };
-  const response = await qwenClient().chat.completions.create(requestBody as any);
+  const requestOptions = options.timeoutMs === undefined
+    ? undefined
+    : { timeout: options.timeoutMs };
+  const response = await qwenClient().chat.completions.create(requestBody as any, requestOptions);
   const raw = response.choices[0]?.message?.content;
   if (!raw) throw new Error("百炼返回了空响应");
   return options.schema.parse(JSON.parse(raw));

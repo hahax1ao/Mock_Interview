@@ -34,6 +34,7 @@ export type SmartExtractionInvoke = (options: {
   temperature?: number;
   maxTokens?: number;
   enableThinking?: boolean;
+  timeoutMs?: number;
 }) => Promise<unknown>;
 
 const normalizeEvidence = (value: string) => value.normalize("NFKC").replace(/\s+/gu, "");
@@ -67,11 +68,13 @@ export async function extractSmartFacts(
       "即使 PDF 阅读顺序错乱，也要按语义分类，不可依赖相邻标题猜测。",
       "每条事实必须返回材料中的逐字证据和真实页码；没有直接支持的事实不要返回。",
       "不得提取联系方式，包括姓名、电话、邮箱、住址、社交账号或其他个人联络信息。",
+      'Return exactly this root object and no other root keys: {"facts":[{"field":"...","value":"...","evidence":"...","page":1,"confidence":0.8}]}',
     ].join("\n"),
     user: `请分析以下逐页材料。每条 value 必须是有意义的事实，不能只是栏目标题。\n\n${renderPages(pages)}`,
     schema: smartExtractionSchema,
     temperature: 0.1,
     enableThinking: false,
+    timeoutMs: 120_000,
   }));
 
   return result.facts

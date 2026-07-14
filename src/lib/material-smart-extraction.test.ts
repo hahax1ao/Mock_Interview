@@ -128,4 +128,17 @@ describe("smart material extraction", () => {
     expect(`${options.system}\n${options.user}`).toContain("不得提取联系方式");
     expect(`${options.system}\n${options.user}`).not.toMatch(/请(?:提取|返回).{0,8}(?:电话|邮箱|联系方式)/);
   });
+
+  it("requires the exact facts root contract and a material-specific timeout", async () => {
+    const invoke = vi.fn<SmartExtractionInvoke>(async () => ({ facts: [] }));
+
+    await extractSmartFacts(pages, "jianli.pdf", invoke);
+
+    const options = invoke.mock.calls[0][0] as Parameters<SmartExtractionInvoke>[0] & { timeoutMs?: number };
+    expect(`${options.system}\n${options.user}`).toContain(
+      '{"facts":[{"field":"...","value":"...","evidence":"...","page":1,"confidence":0.8}]}',
+    );
+    expect(options.timeoutMs).toBe(120_000);
+  });
+
 });
