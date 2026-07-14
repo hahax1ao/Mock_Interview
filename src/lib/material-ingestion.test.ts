@@ -145,9 +145,9 @@ function retryDependencies(
       category: "personal",
       parseStatus: "basic_only",
       chunks: [
-        { page: 1, text: "one" },
-        { page: 1, text: "two" },
-        { page: 2, text: "three" },
+        { page: 2, start: 0, text: "three" },
+        { page: 1, start: 10, text: "two" },
+        { page: 1, start: 0, text: "one" },
       ],
       facts: [fact("技能", "TypeScript")],
     })),

@@ -28,7 +28,7 @@ export async function POST(
           name: material.name,
           category: material.category,
           parseStatus: material.parseStatus,
-          chunks: chunks.map((chunk) => ({ page: chunk.page, text: chunk.text })),
+          chunks: chunks.map((chunk) => ({ page: chunk.page, start: chunk.start, text: chunk.text })),
           facts: facts.map((fact) => ({
             field: fact.field,
             value: fact.value,

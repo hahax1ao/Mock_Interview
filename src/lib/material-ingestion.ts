@@ -162,7 +162,7 @@ interface RetryMaterial {
   name: string;
   category: string;
   parseStatus: string | null;
-  chunks: Array<{ page: number; text: string }>;
+  chunks: Array<{ page: number; start: number; text: string }>;
   facts: EvidenceFactInput[];
 }
 
@@ -179,9 +179,9 @@ export interface RetrySmartExtractionDependencies {
   createId(): string;
 }
 
-function pagesFromChunks(chunks: Array<{ page: number; text: string }>): ParsedPage[] {
+function pagesFromChunks(chunks: Array<{ page: number; start: number; text: string }>): ParsedPage[] {
   const grouped = new Map<number, string[]>();
-  for (const chunk of chunks) {
+  for (const chunk of [...chunks].sort((left, right) => left.page - right.page || left.start - right.start)) {
     const page = grouped.get(chunk.page) ?? [];
     page.push(chunk.text);
     grouped.set(chunk.page, page);
