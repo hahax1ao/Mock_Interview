@@ -56,6 +56,21 @@ const validValue = (value: string) => {
   return trimmed.length > 0 && !/[：:]$/.test(trimmed);
 };
 
+export function isSolelyLocalProfileData(value: string): boolean {
+  let recognized = false;
+  let remainder = value.normalize("NFKC");
+
+  for (const { pattern } of localPatterns) {
+    pattern.lastIndex = 0;
+    remainder = remainder.replace(pattern, () => {
+      recognized = true;
+      return "";
+    });
+  }
+
+  const decorations = /(?:技能|荣誉|项目经历|科研经历|竞赛经历|[=:：、,，;；|\s])/gu;
+  return recognized && remainder.replace(decorations, "").length === 0;
+}
 export function mergeFacts(...groups: EvidenceFactInput[][]): EvidenceFactInput[] {
   const unique = new Map<string, EvidenceFactInput>();
   for (const fact of groups.flat()) {

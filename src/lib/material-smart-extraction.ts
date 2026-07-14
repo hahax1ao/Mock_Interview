@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ParsedPage } from "./material-parser";
 import { models } from "./models";
-import type { EvidenceFactInput } from "./profile-extraction";
+import { isSolelyLocalProfileData, type EvidenceFactInput } from "./profile-extraction";
 import { qwenJson } from "./qwen";
 
 const smartFields = ["项目经历", "科研经历", "竞赛经历", "技能", "荣誉"] as const;
@@ -68,6 +68,7 @@ export async function extractSmartFacts(
       "即使 PDF 阅读顺序错乱，也要按语义分类，不可依赖相邻标题猜测。",
       "每条事实必须返回材料中的逐字证据和真实页码；没有直接支持的事实不要返回。",
       "不得提取联系方式，包括姓名、电话、邮箱、住址、社交账号或其他个人联络信息。",
+      "不得把本地规则负责的 CET4/CET6、GPA/平均成绩、排名、目标方向或课程标签包装成项目、科研、竞赛、技能或荣誉事实。",
       'Return exactly this root object and no other root keys: {"facts":[{"field":"...","value":"...","evidence":"...","page":1,"confidence":0.8}]}',
     ].join("\n"),
     user: `请分析以下逐页材料。每条 value 必须是有意义的事实，不能只是栏目标题。\n\n${renderPages(pages)}`,
@@ -78,6 +79,11 @@ export async function extractSmartFacts(
   }));
 
   return result.facts
-    .filter((fact) => !isHeadingOnly(fact) && validateSmartEvidence(fact, pages))
+    .filter((fact) =>
+      !isHeadingOnly(fact)
+      && !isSolelyLocalProfileData(fact.value)
+      && !isSolelyLocalProfileData(fact.evidence)
+      && validateSmartEvidence(fact, pages),
+    )
     .map((fact) => ({ ...fact, source, confidence: Math.min(fact.confidence, 0.9), extractor: "qwen" }));
 }

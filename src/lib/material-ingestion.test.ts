@@ -5,6 +5,7 @@ import {
   type IngestionDependencies,
   type RetrySmartExtractionDependencies,
 } from "./material-ingestion";
+import { sha256 } from "./material-dedup";
 import type { EvidenceFactInput } from "./profile-extraction";
 
 const page = { page: 1, text: "GPA: 3.8\nProject Atlas" };
@@ -24,6 +25,8 @@ function ingestionDependencies(
   return {
     listMaterials: vi.fn(async () => []),
     updateMaterialHash: vi.fn(async () => undefined),
+    reserveContentHash: vi.fn(async () => ({ kind: "reserved" as const })),
+    releaseContentHash: vi.fn(async () => undefined),
     writeUpload: vi.fn(async ({ materialId, name }) => `uploads/${materialId}/${name}`),
     removeUpload: vi.fn(async () => undefined),
     parseMaterial: vi.fn(async () => [page]),
@@ -80,6 +83,60 @@ describe("material ingestion", () => {
     expect(writeUpload).not.toHaveBeenCalled();
   });
 
+  it("atomically reserves concurrent identical uploads before parsing or calling the model", async () => {
+    const reservations = new Map<string, { id: string; name: string; createdAt: number }>();
+    let nextId = 0;
+    const deps = ingestionDependencies({
+      reserveContentHash: vi.fn(async (contentHash, owner) => {
+        const duplicate = reservations.get(contentHash);
+        if (duplicate) return { kind: "duplicate" as const, material: duplicate };
+        reservations.set(contentHash, { id: owner.materialId, name: owner.name, createdAt: owner.createdAt });
+        return { kind: "reserved" as const };
+      }),
+      releaseContentHash: vi.fn(async (contentHash, materialId) => {
+        if (reservations.get(contentHash)?.id === materialId) reservations.delete(contentHash);
+      }),
+      createId: () => `id-${++nextId}`,
+    });
+
+    const results = await Promise.all([ingestMaterial(input, deps), ingestMaterial(input, deps)]);
+
+    expect(results.map((result) => result.kind).sort()).toEqual(["created", "duplicate"]);
+    expect(deps.parseMaterial).toHaveBeenCalledOnce();
+    expect(deps.extractSmartFacts).toHaveBeenCalledOnce();
+    expect(deps.persistCreated).toHaveBeenCalledOnce();
+  });
+
+  it("releases only its owned hash reservation when ingestion fails", async () => {
+    const releaseContentHash = vi.fn(async () => undefined);
+    const deps = ingestionDependencies({
+      persistCreated: vi.fn(async () => { throw new Error("database unavailable"); }),
+      releaseContentHash,
+    });
+
+    await expect(ingestMaterial(input, deps)).rejects.toThrow("database unavailable");
+
+    expect(releaseContentHash).toHaveBeenCalledWith(sha256(input.buffer), "material-new");
+  });
+
+  it("chooses the deterministic oldest legacy duplicate without creating a unique hash index", async () => {
+    const contentHash = sha256(input.buffer);
+    const reserveContentHash = vi.fn();
+    const deps = ingestionDependencies({
+      listMaterials: vi.fn(async () => [
+        { id: "z-later", name: "later.txt", filePath: "later", contentHash, createdAt: 200 },
+        { id: "b-old", name: "old-b.txt", filePath: "old-b", contentHash, createdAt: 100 },
+        { id: "a-old", name: "old-a.txt", filePath: "old-a", contentHash, createdAt: 100 },
+      ]),
+      reserveContentHash,
+    });
+
+    await expect(ingestMaterial(input, deps)).resolves.toEqual({
+      kind: "duplicate",
+      material: { id: "a-old", name: "old-a.txt", createdAt: 100 },
+    });
+    expect(reserveContentHash).not.toHaveBeenCalled();
+  });
   it("accepts the same filename when the bytes differ", async () => {
     const deps = ingestionDependencies({
       listMaterials: vi.fn(async () => [{

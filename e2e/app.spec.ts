@@ -108,6 +108,27 @@ test("material library deletes a material and its local state immediately", asyn
   await expect(page.getByRole("button", { name: `引用材料 ${material.name}` })).toHaveCount(0);
 });
 
+test("material deletion shows a notice when the server returns non-JSON", async ({ page }) => {
+  const material = {
+    id: "material-error", name: "keep-me.pdf", category: "personal", status: "ready",
+    parseStatus: "complete", createdAt: 1_767_225_600_000,
+  };
+  await page.route("**/api/materials", async (route) => {
+    if (route.request().method() === "GET") await route.fulfill({ json: { materials: [material], facts: [] } });
+    else await route.fallback();
+  });
+  await page.route("**/api/materials/material-error", async (route) => {
+    await route.fulfill({ status: 500, contentType: "text/html", body: "<h1>server exploded</h1>" });
+  });
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "删除 keep-me.pdf" }).click();
+
+  await expect(page.getByRole("status")).toContainText("材料删除失败，请稍后重试");
+  await expect(page.getByText("keep-me.pdf", { exact: true })).toBeVisible();
+});
 test("material library retries basic-only smart parsing and refreshes facts", async ({ page }) => {
   const material = {
     id: "material-1", name: "jianli.pdf", category: "personal", status: "ready",

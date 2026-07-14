@@ -17,12 +17,14 @@ export async function backfillMaterialHashes(
 ): Promise<MaterialHashRow[]> {
   return Promise.all(rows.map(async (row) => {
     if (row.contentHash) return row;
+    let contents: Buffer;
     try {
-      const contentHash = sha256(await readFile(row.filePath));
-      await update(row.id, contentHash);
-      return { ...row, contentHash };
+      contents = await readFile(row.filePath);
     } catch {
       return row;
     }
+    const contentHash = sha256(contents);
+    await update(row.id, contentHash);
+    return { ...row, contentHash };
   }));
 }

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
-import { materialChunks, materials, profileFacts } from "@/db/schema";
+import { materialChunks, materialHashReservations, materials, profileFacts } from "@/db/schema";
 import { chunkMaterial } from "@/domain/materials";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
 import { ingestMaterial } from "@/lib/material-ingestion";
@@ -51,6 +51,28 @@ export async function POST(request: Request) {
       }).from(materials),
       updateMaterialHash: async (id, contentHash) => {
         await db.update(materials).set({ contentHash }).where(eq(materials.id, id));
+      },
+      reserveContentHash: async (contentHash, owner) => {
+        const inserted = await db.insert(materialHashReservations).values({
+          contentHash,
+          materialId: owner.materialId,
+          name: owner.name,
+          createdAt: owner.createdAt,
+        }).onConflictDoNothing().returning({ contentHash: materialHashReservations.contentHash });
+        if (inserted.length) return { kind: "reserved" as const };
+        const [duplicate] = await db.select().from(materialHashReservations)
+          .where(eq(materialHashReservations.contentHash, contentHash));
+        if (!duplicate) throw new Error("材料哈希预留状态不一致");
+        return {
+          kind: "duplicate" as const,
+          material: { id: duplicate.materialId, name: duplicate.name, createdAt: duplicate.createdAt },
+        };
+      },
+      releaseContentHash: async (contentHash, materialId) => {
+        await db.delete(materialHashReservations).where(and(
+          eq(materialHashReservations.contentHash, contentHash),
+          eq(materialHashReservations.materialId, materialId),
+        ));
       },
       writeUpload: async ({ materialId, name, buffer: contents }) => {
         const safeName = name.replace(/[^\p{L}\p{N}._-]+/gu, "_");

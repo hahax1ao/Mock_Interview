@@ -38,13 +38,17 @@ describe("legacy SQLite migration", () => {
 
     const materialInfo = await db.run(sql`PRAGMA table_info(materials)`);
     const factInfo = await db.run(sql`PRAGMA table_info(profile_facts)`);
+    const reservationInfo = await db.run(sql`PRAGMA table_info(material_hash_reservations)`);
     const materialColumns = Object.fromEntries(materialInfo.rows.map((row) => [row.name, row]));
     const factColumns = Object.fromEntries(factInfo.rows.map((row) => [row.name, row]));
+    const reservationColumns = Object.fromEntries(reservationInfo.rows.map((row) => [row.name, row]));
 
     expect(materialColumns.content_hash).toBeDefined();
     expect(materialColumns.parse_status?.dflt_value).toBe("'ready'");
     expect(factColumns.evidence?.dflt_value).toBe("''");
     expect(factColumns.page?.dflt_value).toBe("1");
     expect(factColumns.extractor?.dflt_value).toBe("'local'");
+    expect(reservationColumns.content_hash?.pk).toBe(1);
+    expect(reservationColumns.material_id).toBeDefined();
   });
 });

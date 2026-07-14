@@ -103,6 +103,49 @@ describe("smart material extraction", () => {
     await expect(extractSmartFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
   });
 
+  it("rejects locally-owned CET scores even when the model assigns them to 技能", async () => {
+    const value = "CET4:514、CET6:470";
+    const invoke = async () => ({ facts: [{
+      field: "技能",
+      value,
+      evidence: value,
+      page: 1,
+      confidence: 0.88,
+    }] });
+
+    await expect(extractSmartFacts([{ page: 1, text: `技能=${value}` }], "jianli.pdf", invoke))
+      .resolves.toEqual([]);
+  });
+
+  it.each([
+    "GPA：3.8/4.0",
+    "专业排名：3/80",
+    "目标方向：集成电路设计",
+    "核心课程：数字电路、模拟电路",
+  ])("rejects a smart fact consisting solely of local profile data: %s", async (value) => {
+    const invoke = async () => ({ facts: [{
+      field: "荣誉",
+      value,
+      evidence: value,
+      page: 1,
+      confidence: 0.8,
+    }] });
+
+    await expect(extractSmartFacts([{ page: 1, text: value }], "jianli.pdf", invoke)).resolves.toEqual([]);
+  });
+
+  it("keeps a substantive project sentence that also mentions a locally-owned datum", async () => {
+    const value = "在 Atlas 项目中设计流水线，使吞吐率提升 35%，项目期间 GPA 为 3.8";
+    const invoke = async () => ({ facts: [{
+      field: "项目经历",
+      value,
+      evidence: value,
+      page: 1,
+      confidence: 0.86,
+    }] });
+
+    await expect(extractSmartFacts([{ page: 1, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
+  });
   it("rejects malformed or disallowed model fields", async () => {
     const invoke = async () => ({ facts: [{
       field: "联系方式",

@@ -12,6 +12,12 @@ export const materials = sqliteTable("materials", {
   createdAt: integer("created_at").notNull(),
 });
 
+export const materialHashReservations = sqliteTable("material_hash_reservations", {
+  contentHash: text("content_hash").primaryKey(),
+  materialId: text("material_id").notNull(),
+  name: text("name").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
 export const materialChunks = sqliteTable("material_chunks", {
   id: text("id").primaryKey(),
   materialId: text("material_id").notNull().references(() => materials.id, { onDelete: "cascade" }),

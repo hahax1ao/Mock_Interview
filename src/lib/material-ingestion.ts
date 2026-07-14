@@ -46,6 +46,11 @@ export interface PersistCreatedInput {
 export interface IngestionDependencies {
   listMaterials(): Promise<ExistingMaterial[]>;
   updateMaterialHash(id: string, hash: string): Promise<void>;
+  reserveContentHash(hash: string, owner: { materialId: string; name: string; createdAt: number }): Promise<
+    | { kind: "reserved" }
+    | { kind: "duplicate"; material: { id: string; name: string; createdAt: number } }
+  >;
+  releaseContentHash(hash: string, materialId: string): Promise<void>;
   writeUpload(input: { materialId: string; name: string; buffer: Buffer }): Promise<string>;
   removeUpload(materialId: string): Promise<void>;
   parseMaterial(name: string, mimeType: string, buffer: Buffer): Promise<ParsedPage[]>;
@@ -85,7 +90,9 @@ export async function ingestMaterial(
     await dependencies.listMaterials(),
     dependencies.updateMaterialHash,
   ) as ExistingMaterial[];
-  const duplicate = existing.find((material) => material.contentHash === contentHash);
+  const duplicate = existing
+    .filter((material) => material.contentHash === contentHash)
+    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))[0];
   if (duplicate) {
     return {
       kind: "duplicate",
@@ -94,9 +101,16 @@ export async function ingestMaterial(
   }
 
   const materialId = dependencies.createId();
-  const filePath = await dependencies.writeUpload({ materialId, name: input.name, buffer: input.buffer });
+  const createdAt = dependencies.now();
+  const reservation = await dependencies.reserveContentHash(contentHash, {
+    materialId,
+    name: input.name,
+    createdAt,
+  });
+  if (reservation.kind === "duplicate") return reservation;
 
   try {
+    const filePath = await dependencies.writeUpload({ materialId, name: input.name, buffer: input.buffer });
     const pages = await dependencies.parseMaterial(input.name, input.mimeType, input.buffer);
     const chunks = dependencies.chunkMaterial({ materialId, source: input.name, pages });
     let localFacts: EvidenceFactInput[] = [];
@@ -128,7 +142,7 @@ export async function ingestMaterial(
         status: "ready",
         contentHash,
         parseStatus,
-        createdAt: dependencies.now(),
+        createdAt,
       },
       chunks: chunks.map((chunk) => ({
         id: chunk.id,
@@ -152,7 +166,10 @@ export async function ingestMaterial(
       smartFacts: storedFacts.filter((fact) => fact.extractor === "qwen").length,
     };
   } catch (error) {
-    await dependencies.removeUpload(materialId);
+    await Promise.allSettled([
+      dependencies.removeUpload(materialId),
+      dependencies.releaseContentHash(contentHash, materialId),
+    ]);
     throw error;
   }
 }

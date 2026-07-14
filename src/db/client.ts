@@ -25,6 +25,9 @@ export function initDatabase() {
         id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, mime_type TEXT NOT NULL,
         file_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ready', created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS material_hash_reservations (
+        content_hash TEXT PRIMARY KEY, material_id TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS material_chunks (
         id TEXT PRIMARY KEY, material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
         source TEXT NOT NULL, page INTEGER NOT NULL, text TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL

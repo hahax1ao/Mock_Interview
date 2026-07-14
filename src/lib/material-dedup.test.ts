@@ -24,4 +24,10 @@ describe("material content hashes", () => {
     expect(rows.find((row) => row.id === "done")?.contentHash).toBe("known");
     expect(rows.find((row) => row.id === "missing")?.contentHash).toBeNull();
   });
+
+  it("does not swallow a database failure while backfilling a readable file", async () => {
+    await expect(backfillMaterialHashes([
+      { id: "old", filePath: fixture, contentHash: null },
+    ], async () => { throw new Error("database unavailable"); })).rejects.toThrow("database unavailable");
+  });
 });
