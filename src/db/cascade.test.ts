@@ -143,6 +143,7 @@ describe("DELETE /api/materials/:id", () => {
     ]);
     await db.insert(materialHashReservations).values({
       contentHash: hash, materialId: firstId, name: "first.pdf", createdAt: 100,
+      state: "pending", leaseUntil: Date.now() + 60_000,
     });
 
     try {
@@ -153,7 +154,7 @@ describe("DELETE /api/materials/:id", () => {
 
       expect(response.status).toBe(200);
       expect(await db.select().from(materialHashReservations).where(eq(materialHashReservations.contentHash, hash)))
-        .toEqual([expect.objectContaining({ materialId: secondId, name: "second.pdf" })]);
+        .toEqual([expect.objectContaining({ materialId: secondId, name: "second.pdf", state: "committed", leaseUntil: null })]);
       expect(await db.select().from(materials).where(eq(materials.id, secondId))).toHaveLength(1);
     } finally {
       await db.delete(materialHashReservations).where(eq(materialHashReservations.contentHash, hash));

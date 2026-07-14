@@ -17,6 +17,8 @@ export const materialHashReservations = sqliteTable("material_hash_reservations"
   materialId: text("material_id").notNull(),
   name: text("name").notNull(),
   createdAt: integer("created_at").notNull(),
+  state: text("state").$type<"pending" | "committed">().notNull().default("committed"),
+  leaseUntil: integer("lease_until"),
 });
 export const materialChunks = sqliteTable("material_chunks", {
   id: text("id").primaryKey(),

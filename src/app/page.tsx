@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InterviewClock, createInterviewPlan } from "@/domain/interview-plan";
 import { useRealtimeInterview } from "@/hooks/use-realtime-interview";
+import { keepSuccessfulDeletionNotice } from "@/lib/material-page-actions";
 
 type Material = { id: string; name: string; category: string; status: string; parseStatus: "complete" | "basic_only" | string; createdAt: number };
 type ProfileFact = { id: string; materialId: string | null; field: string; value: string; source: string; confidence: number; confirmed: boolean };
@@ -131,8 +132,7 @@ export default function Home() {
       setFactValues((current) => Object.fromEntries(
         Object.entries(current).filter(([id]) => !removedFactIds.has(id)),
       ));
-      setNotice(`已删除材料：${item.name}`);
-      await refresh();
+      await keepSuccessfulDeletionNotice(`已删除材料：${item.name}`, refresh, setNotice);
     } catch {
       setNotice("材料删除失败，请稍后重试");
     } finally {

@@ -104,12 +104,16 @@ export const deleteMaterial = createDeleteMaterialHandler({
           materialId: canonical.id,
           name: canonical.name,
           createdAt: canonical.createdAt,
+          state: "committed",
+          leaseUntil: null,
         }).onConflictDoUpdate({
           target: materialHashReservations.contentHash,
           set: {
             materialId: canonical.id,
             name: canonical.name,
             createdAt: canonical.createdAt,
+            state: "committed",
+            leaseUntil: null,
           },
         });
       } else {

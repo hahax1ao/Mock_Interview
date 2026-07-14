@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { migrateLegacyDatabase, resolveLocalStorageRoot } from "@/lib/local-storage";
 import { cleanupMaterialTrash } from "@/lib/material-deletion";
+import { reconcileMaterialHashReservations } from "@/lib/material-reservations";
 
 const storageRoot = resolveLocalStorageRoot();
 const databasePath = join(storageRoot, "baoyan.db");
@@ -26,7 +27,8 @@ export function initDatabase() {
         file_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ready', created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS material_hash_reservations (
-        content_hash TEXT PRIMARY KEY, material_id TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL
+        content_hash TEXT PRIMARY KEY, material_id TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL,
+        state TEXT NOT NULL DEFAULT 'committed', lease_until INTEGER
       );
       CREATE TABLE IF NOT EXISTS material_chunks (
         id TEXT PRIMARY KEY, material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
@@ -51,6 +53,8 @@ export function initDatabase() {
       );
     `);
     const migrations = [
+      "ALTER TABLE material_hash_reservations ADD COLUMN state TEXT NOT NULL DEFAULT 'committed'",
+      "ALTER TABLE material_hash_reservations ADD COLUMN lease_until INTEGER",
       "ALTER TABLE interviews ADD COLUMN review_lease_until INTEGER",
       "ALTER TABLE materials ADD COLUMN content_hash TEXT",
       "ALTER TABLE materials ADD COLUMN parse_status TEXT DEFAULT 'ready'",
@@ -65,6 +69,7 @@ export function initDatabase() {
         if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
       }
     }
+    await reconcileMaterialHashReservations();
     try {
       await cleanupMaterialTrash(storageRoot);
     } catch (error) {

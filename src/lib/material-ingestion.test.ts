@@ -26,6 +26,7 @@ function ingestionDependencies(
     listMaterials: vi.fn(async () => []),
     updateMaterialHash: vi.fn(async () => undefined),
     reserveContentHash: vi.fn(async () => ({ kind: "reserved" as const })),
+    commitContentHash: vi.fn(async () => undefined),
     releaseContentHash: vi.fn(async () => undefined),
     writeUpload: vi.fn(async ({ materialId, name }) => `uploads/${materialId}/${name}`),
     removeUpload: vi.fn(async () => undefined),
@@ -84,14 +85,18 @@ describe("material ingestion", () => {
   });
 
   it("atomically reserves concurrent identical uploads before parsing or calling the model", async () => {
-    const reservations = new Map<string, { id: string; name: string; createdAt: number }>();
+    const reservations = new Map<string, { id: string; name: string; createdAt: number; state: "pending" | "committed" }>();
     let nextId = 0;
     const deps = ingestionDependencies({
       reserveContentHash: vi.fn(async (contentHash, owner) => {
         const duplicate = reservations.get(contentHash);
         if (duplicate) return { kind: "duplicate" as const, material: duplicate };
-        reservations.set(contentHash, { id: owner.materialId, name: owner.name, createdAt: owner.createdAt });
+        reservations.set(contentHash, { id: owner.materialId, name: owner.name, createdAt: owner.createdAt, state: "pending" });
         return { kind: "reserved" as const };
+      }),
+      commitContentHash: vi.fn(async (contentHash, materialId) => {
+        const reservation = reservations.get(contentHash);
+        if (reservation && reservation.id === materialId) reservation.state = "committed";
       }),
       releaseContentHash: vi.fn(async (contentHash, materialId) => {
         if (reservations.get(contentHash)?.id === materialId) reservations.delete(contentHash);
@@ -101,10 +106,56 @@ describe("material ingestion", () => {
 
     const results = await Promise.all([ingestMaterial(input, deps), ingestMaterial(input, deps)]);
 
-    expect(results.map((result) => result.kind).sort()).toEqual(["created", "duplicate"]);
+    expect(results.map((result) => result.kind)).toContain("created");
+    expect(results.map((result) => result.kind)).toSatisfy((kinds: string[]) => kinds.includes("in_progress") || kinds.includes("duplicate"));
     expect(deps.parseMaterial).toHaveBeenCalledOnce();
     expect(deps.extractSmartFacts).toHaveBeenCalledOnce();
     expect(deps.persistCreated).toHaveBeenCalledOnce();
+  });
+
+  it("lets a future retry proceed after the winning ingestion fails and releases its reservation", async () => {
+    let owner: string | undefined;
+    let attempts = 0;
+    const deps = ingestionDependencies({
+      reserveContentHash: vi.fn(async (_hash, candidate) => {
+        if (owner) return { kind: "in_progress" as const, owner: { id: owner, name: input.name, createdAt: 200 } };
+        owner = candidate.materialId;
+        return { kind: "reserved" as const };
+      }),
+      releaseContentHash: vi.fn(async (_hash, materialId) => {
+        if (owner === materialId) owner = undefined;
+      }),
+      parseMaterial: vi.fn(async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("parser crashed");
+        return [page];
+      }),
+    });
+    await expect(ingestMaterial(input, deps)).rejects.toThrow("parser crashed");
+    await expect(ingestMaterial(input, deps)).resolves.toMatchObject({ kind: "created" });
+    expect(deps.parseMaterial).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves the ingestion error and surfaces a reservation release failure", async () => {
+    const original = new Error("database unavailable");
+    const release = new Error("reservation release unavailable");
+    const deps = ingestionDependencies({
+      persistCreated: vi.fn(async () => { throw original; }),
+      releaseContentHash: vi.fn(async () => { throw release; }),
+    });
+    const error = await ingestMaterial(input, deps).catch((caught) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual(expect.arrayContaining([original, release]));
+  });
+
+  it("commits the reservation only after material persistence succeeds", async () => {
+    const order: string[] = [];
+    const deps = ingestionDependencies({
+      persistCreated: vi.fn(async () => { order.push("persist"); }),
+      commitContentHash: vi.fn(async () => { order.push("commit"); }),
+    });
+    await ingestMaterial(input, deps);
+    expect(order).toEqual(["persist", "commit"]);
   });
 
   it("releases only its owned hash reservation when ingestion fails", async () => {

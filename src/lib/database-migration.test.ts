@@ -50,5 +50,8 @@ describe("legacy SQLite migration", () => {
     expect(factColumns.extractor?.dflt_value).toBe("'local'");
     expect(reservationColumns.content_hash?.pk).toBe(1);
     expect(reservationColumns.material_id).toBeDefined();
+    expect(reservationColumns.state?.notnull).toBe(1);
+    expect(reservationColumns.state?.dflt_value).toBe("'committed'");
+    expect(reservationColumns.lease_until).toBeDefined();
   });
 });
