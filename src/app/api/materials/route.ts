@@ -1,13 +1,17 @@
-import { NextResponse } from "next/server";
-import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
 import { materialChunks, materials, profileFacts } from "@/db/schema";
 import { chunkMaterial } from "@/domain/materials";
-import { extractFacts, parseMaterial } from "@/lib/material-parser";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
+import { ingestMaterial } from "@/lib/material-ingestion";
+import { parseMaterial } from "@/lib/material-parser";
+import { extractSmartFacts } from "@/lib/material-smart-extraction";
+import { extractLocalFacts } from "@/lib/profile-extraction";
 
 export const runtime = "nodejs";
 const categorySchema = z.enum(["personal", "target", "reference"]);
@@ -25,32 +29,73 @@ export async function POST(request: Request) {
     const file = form.get("file");
     const category = categorySchema.parse(form.get("category") ?? "personal");
     if (!(file instanceof File)) return NextResponse.json({ error: "请选择文件" }, { status: 400 });
-    if (file.size > 20 * 1024 * 1024) return NextResponse.json({ error: "单个文件不能超过 20MB" }, { status: 413 });
+    if (file.size > 20 * 1024 * 1024) {
+      return NextResponse.json({ error: "单个文件不能超过 20MB" }, { status: 413 });
+    }
 
-    const id = crypto.randomUUID();
-    const safeName = file.name.replace(/[^\p{L}\p{N}._-]+/gu, "_");
-    const directory = resolve(resolveLocalStorageRoot(), "uploads", id);
-    const filePath = resolve(directory, safeName);
-    await mkdir(directory, { recursive: true });
     const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(filePath, buffer);
-
-    const pages = await parseMaterial(file.name, file.type, buffer);
-    const chunks = chunkMaterial({ materialId: id, source: file.name, pages });
-    const facts = extractFacts(pages, file.name, id);
+    const uploadsRoot = resolve(resolveLocalStorageRoot(), "uploads");
     await initDatabase();
-    await db.insert(materials).values({
-      id, name: file.name, category, mimeType: file.type || "application/octet-stream",
-      filePath, status: "ready", createdAt: Date.now(),
+    const result = await ingestMaterial({
+      name: file.name,
+      mimeType: file.type,
+      category,
+      buffer,
+    }, {
+      listMaterials: () => db.select({
+        id: materials.id,
+        name: materials.name,
+        filePath: materials.filePath,
+        contentHash: materials.contentHash,
+        createdAt: materials.createdAt,
+      }).from(materials),
+      updateMaterialHash: async (id, contentHash) => {
+        await db.update(materials).set({ contentHash }).where(eq(materials.id, id));
+      },
+      writeUpload: async ({ materialId, name, buffer: contents }) => {
+        const safeName = name.replace(/[^\p{L}\p{N}._-]+/gu, "_");
+        const directory = resolve(uploadsRoot, materialId);
+        const filePath = resolve(directory, safeName);
+        await mkdir(directory, { recursive: true });
+        await writeFile(filePath, contents);
+        return filePath;
+      },
+      removeUpload: async (materialId) => {
+        await rm(resolve(uploadsRoot, materialId), { recursive: true, force: true });
+      },
+      parseMaterial,
+      chunkMaterial,
+      extractLocalFacts,
+      extractSmartFacts,
+      persistCreated: async ({ material, chunks, facts }) => {
+        await db.transaction(async (tx) => {
+          await tx.insert(materials).values(material);
+          if (chunks.length) await tx.insert(materialChunks).values(chunks);
+          if (facts.length) await tx.insert(profileFacts).values(facts);
+        });
+      },
+      createId: randomUUID,
+      now: Date.now,
     });
-    if (chunks.length) await db.insert(materialChunks).values(chunks.map((chunk) => ({
-      ...chunk,
-      start: chunk.position?.start ?? 0,
-      end: chunk.position?.end ?? chunk.text.length,
-    })));
-    if (facts.length) await db.insert(profileFacts).values(facts);
-    return NextResponse.json({ material: { id, name: file.name, category }, pages: pages.length, chunks: chunks.length, facts }, { status: 201 });
+
+    if (result.kind === "duplicate") {
+      return NextResponse.json({
+        error: "该材料已上传",
+        duplicateMaterial: result.material,
+      }, { status: 409 });
+    }
+
+    return NextResponse.json({
+      material: { id: result.materialId, name: file.name, category },
+      pages: result.pages,
+      chunks: result.chunks,
+      parseStatus: result.parseStatus,
+      localFacts: result.localFacts,
+      smartFacts: result.smartFacts,
+    }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "材料解析失败" }, { status: 400 });
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : "材料解析失败",
+    }, { status: 400 });
   }
 }
