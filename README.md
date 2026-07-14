@@ -18,6 +18,8 @@
 
    不要使用 Coding Plan / Token Plan 专用 Key，也不要把真实 Key 提交到 Git 或发到聊天中。
 
+   智能材料解析默认使用 `QWEN_MATERIAL_MODEL=qwen3.5-flash`。本地解析会先从材料中提取文本；智能解析时仅将提取出的材料文本发送到阿里云百炼，原始 PDF、DOCX、图片等文件不会上传到百炼，仍只保存在本机。
+
 4. 启动：
 
    ```powershell

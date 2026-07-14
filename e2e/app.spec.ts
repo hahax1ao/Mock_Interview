@@ -130,6 +130,7 @@ test("material library retries basic-only smart parsing and refreshes facts", as
     });
   });
   await page.route("**/api/materials/material-1/retry", async (route) => {
+    expect(route.request().method()).toBe("POST");
     await retryGate;
     retried = true;
     await route.fulfill({ json: { materialId: material.id, parseStatus: "complete", factsAdded: 1 } });
