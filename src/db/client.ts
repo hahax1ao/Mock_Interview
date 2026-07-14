@@ -46,10 +46,20 @@ export function initDatabase() {
         status TEXT NOT NULL, report TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
     `);
-    try {
-      await client.execute("ALTER TABLE interviews ADD COLUMN review_lease_until INTEGER");
-    } catch (error) {
-      if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
+    const migrations = [
+      "ALTER TABLE interviews ADD COLUMN review_lease_until INTEGER",
+      "ALTER TABLE materials ADD COLUMN content_hash TEXT",
+      "ALTER TABLE materials ADD COLUMN parse_status TEXT DEFAULT 'ready'",
+      "ALTER TABLE profile_facts ADD COLUMN evidence TEXT DEFAULT ''",
+      "ALTER TABLE profile_facts ADD COLUMN page INTEGER DEFAULT 1",
+      "ALTER TABLE profile_facts ADD COLUMN extractor TEXT DEFAULT 'local'",
+    ];
+    for (const migration of migrations) {
+      try {
+        await client.execute(migration);
+      } catch (error) {
+        if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
+      }
     }
   })();
   return initialized;

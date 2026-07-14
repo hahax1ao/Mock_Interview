@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { migrateLegacyDatabase } from "./local-storage";
 
@@ -28,5 +29,22 @@ describe("legacy SQLite migration", () => {
     expect(migrated.prepare("SELECT value FROM facts").get()).toEqual({ value: "from-wal" });
     migrated.close();
     writer.close();
+  });
+
+  it("adds material hash and parse metadata columns idempotently", async () => {
+    const { db, initDatabase } = await import("@/db/client");
+    await initDatabase();
+    await initDatabase();
+
+    const materialInfo = await db.run(sql`PRAGMA table_info(materials)`);
+    const factInfo = await db.run(sql`PRAGMA table_info(profile_facts)`);
+    const materialColumns = Object.fromEntries(materialInfo.rows.map((row) => [row.name, row]));
+    const factColumns = Object.fromEntries(factInfo.rows.map((row) => [row.name, row]));
+
+    expect(materialColumns.content_hash).toBeDefined();
+    expect(materialColumns.parse_status?.dflt_value).toBe("'ready'");
+    expect(factColumns.evidence?.dflt_value).toBe("''");
+    expect(factColumns.page?.dflt_value).toBe("1");
+    expect(factColumns.extractor?.dflt_value).toBe("'local'");
   });
 });

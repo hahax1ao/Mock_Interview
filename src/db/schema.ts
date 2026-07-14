@@ -7,6 +7,8 @@ export const materials = sqliteTable("materials", {
   mimeType: text("mime_type").notNull(),
   filePath: text("file_path").notNull(),
   status: text("status").notNull().default("ready"),
+  contentHash: text("content_hash"),
+  parseStatus: text("parse_status").default("ready"),
   createdAt: integer("created_at").notNull(),
 });
 
@@ -27,6 +29,9 @@ export const profileFacts = sqliteTable("profile_facts", {
   value: text("value").notNull(),
   source: text("source").notNull(),
   confidence: real("confidence").notNull(),
+  evidence: text("evidence").default(""),
+  page: integer("page").default(1),
+  extractor: text("extractor").default("local"),
   confirmed: integer("confirmed", { mode: "boolean" }).notNull().default(false),
 });
 
