@@ -3,9 +3,13 @@ import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { migrateLegacyDatabase, resolveLocalStorageRoot } from "@/lib/local-storage";
 
-const databasePath = join(process.cwd(), "data", "baoyan.db");
+const storageRoot = resolveLocalStorageRoot();
+const databasePath = join(storageRoot, "baoyan.db");
+const legacyDatabasePath = join(process.cwd(), "data", "baoyan.db");
 mkdirSync(dirname(databasePath), { recursive: true });
+migrateLegacyDatabase(legacyDatabasePath, databasePath);
 
 const client = createClient({ url: `file:${databasePath}` });
 export const db = drizzle(client, { schema });

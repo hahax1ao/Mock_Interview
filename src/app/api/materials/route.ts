@@ -7,6 +7,7 @@ import { db, initDatabase } from "@/db/client";
 import { materialChunks, materials, profileFacts } from "@/db/schema";
 import { chunkMaterial } from "@/domain/materials";
 import { extractFacts, parseMaterial } from "@/lib/material-parser";
+import { resolveLocalStorageRoot } from "@/lib/local-storage";
 
 export const runtime = "nodejs";
 const categorySchema = z.enum(["personal", "target", "reference"]);
@@ -28,7 +29,7 @@ export async function POST(request: Request) {
 
     const id = crypto.randomUUID();
     const safeName = file.name.replace(/[^\p{L}\p{N}._-]+/gu, "_");
-    const directory = resolve("uploads", id);
+    const directory = resolve(resolveLocalStorageRoot(), "uploads", id);
     const filePath = resolve(directory, safeName);
     await mkdir(directory, { recursive: true });
     const buffer = Buffer.from(await file.arrayBuffer());

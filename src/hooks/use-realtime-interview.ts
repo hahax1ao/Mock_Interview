@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseRealtimeServerEvent } from "@/lib/realtime-events";
+import { reconnectDecision } from "@/lib/reconnect-policy";
 
 type Role = "chair" | "technical" | "research" | "english";
 type Transcript = { role: Role | "candidate"; text: string; atMs: number; interrupted?: boolean };
@@ -54,6 +55,10 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const transcriptRef = useRef<Transcript[]>([]);
   const topicQuestionDepth = useRef(0);
   const reconnect = useRef<() => Promise<void>>(async () => undefined);
+  const micPermissionSettled = useRef(false);
+  const sessionStarted = useRef(false);
+  const connectionGeneration = useRef(0);
+  const reconnectAttempts = useRef(0);
 
   const drainEvents = useCallback(async () => {
     if (!interviewId) return;
@@ -130,11 +135,43 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     } });
   }, [saveEvent]);
 
+  const beginSession = useCallback(() => {
+    if (sessionStarted.current || !sessionReady.current || !micPermissionSettled.current) return;
+    sessionStarted.current = true;
+    setState(micAvailable.current ? "connected" : "text");
+    void saveEvent({ type: "connection", payload: { state: micAvailable.current ? "connected" : "text-fallback", atMs: elapsedMs.current } });
+    const ws = socket.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      const recent = transcriptRef.current.slice(-4).map((turn) => `${turn.role}: ${turn.text}`).join("\\n");
+      const instructions = elapsedMs.current === 0
+        ? "你是主考官。现在正式开场，先简短问候，再只问一个自我介绍问题。"
+        : `刚才连接中断。现在由【${ROLE_LABEL[lastRole.current]}】承接已有对话继续，只问一个问题。最近转写：\\n${recent}`;
+      ws.send(JSON.stringify({ type: "response.create", response: { instructions } }));
+    }
+    if (!timer.current) timer.current = setInterval(() => {
+      elapsedMs.current += 1000;
+      const role = onElapsed(1000);
+      const current = socket.current;
+      if (role !== lastRole.current && current?.readyState === WebSocket.OPEN) {
+        const previous = lastRole.current;
+        lastRole.current = role;
+        topicQuestionDepth.current = 0;
+        stopAudio();
+        current.send(JSON.stringify({ type: "response.cancel" }));
+        current.send(JSON.stringify({ type: "response.create", response: { instructions: `立即停止当前模块。现在由【${ROLE_LABEL[role]}】继续面试，只问一个问题。` } }));
+        void saveEvent({ type: "handoff", payload: { from: previous, to: role, atMs: elapsedMs.current } });
+      }
+    }, 1000);
+  }, [onElapsed, saveEvent, stopAudio]);
+
   const handleMessage = useCallback((event: MessageEvent) => {
     let raw: unknown;
     try { raw = JSON.parse(String(event.data)); } catch { return; }
     const parsed = parseRealtimeServerEvent(raw);
-    if (parsed.kind === "audio") playAudio(parsed.data);
+    if (parsed.kind === "audio") {
+      reconnectAttempts.current = 0;
+      playAudio(parsed.data);
+    }
     if (parsed.kind === "transcript") {
       const role = parsed.speaker === "candidate" ? "candidate" : lastRole.current;
       persistTranscript(role, parsed.text);
@@ -151,54 +188,74 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     }
     if (parsed.kind === "ready") {
       sessionReady.current = true;
-      setState(micAvailable.current ? "connected" : "text");
-      void saveEvent({ type: "connection", payload: { state: micAvailable.current ? "connected" : "text-fallback", atMs: elapsedMs.current } });
-      const ws = socket.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        const recent = transcriptRef.current.slice(-4).map((turn) => `${turn.role}: ${turn.text}`).join("\\n");
-        const instructions = elapsedMs.current === 0
-          ? "你是主考官。现在正式开场，先简短问候，再只问一个自我介绍问题。"
-          : `刚才连接中断。现在由【${ROLE_LABEL[lastRole.current]}】承接已有对话继续，只问一个问题。最近转写：\\n${recent}`;
-        ws.send(JSON.stringify({ type: "response.create", response: { instructions } }));
-      }
-      if (!timer.current) timer.current = setInterval(() => {
-        elapsedMs.current += 1000;
-        const role = onElapsed(1000);
-        const current = socket.current;
-        if (role !== lastRole.current && current?.readyState === WebSocket.OPEN) {
-          const previous = lastRole.current;
-          lastRole.current = role;
-          topicQuestionDepth.current = 0;
-          stopAudio();
-          current.send(JSON.stringify({ type: "response.cancel" }));
-          current.send(JSON.stringify({ type: "response.create", response: { instructions: `立即停止当前模块。现在由【${ROLE_LABEL[role]}】继续面试，只问一个问题。` } }));
-          void saveEvent({ type: "handoff", payload: { from: previous, to: role, atMs: elapsedMs.current } });
-        }
-      }, 1000);
+      beginSession();
     }
-  }, [onElapsed, persistTranscript, playAudio, saveEvent, stopAudio]);
+  }, [beginSession, persistTranscript, playAudio, stopAudio]);
 
   const connect = useCallback(async () => {
     if (!interviewId) return;
     manualClose.current = false;
+    const generation = ++connectionGeneration.current;
+    const isCurrent = () => generation === connectionGeneration.current && !manualClose.current;
     sessionReady.current = false;
+    micPermissionSettled.current = false;
+    sessionStarted.current = false;
     setError("");
     setState("connecting");
     const response = await fetch("/api/realtime/session", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ interviewId }),
     });
+    if (!isCurrent()) return;
     const session = await response.json();
+    if (!isCurrent()) return;
     if (!response.ok) throw new Error(session.error ?? "无法创建实时会话");
 
     const context = new AudioContext();
     audio.current = context;
     await context.resume();
+    if (!isCurrent()) {
+      await context.close().catch(() => undefined);
+      return;
+    }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${location.host}${session.websocketPath}`);
     socket.current = ws;
+    ws.onmessage = (event) => { if (isCurrent()) handleMessage(event); };
+    ws.onerror = () => { if (isCurrent()) setError("实时连接异常，正在尝试恢复"); };
+    ws.onclose = (event) => {
+      if (socket.current !== ws) return;
+      sessionReady.current = false;
+      if (timer.current) { clearInterval(timer.current); timer.current = null; }
+      sessionStarted.current = false;
+      micPermissionSettled.current = false;
+      if (manualClose.current) return;
+      void saveEvent({ type: "connection", payload: { state: "disconnected", atMs: elapsedMs.current } });
+      processor.current?.disconnect();
+      connectionGeneration.current += 1;
+      stream.current?.getTracks().forEach((track) => track.stop());
+      void audio.current?.close();
+      const decision = reconnectDecision(++reconnectAttempts.current);
+      if (!decision.retry) {
+        setState("text");
+        setError(`实时语音连续断开，已自动切换到文字模式${event.reason ? `：${event.reason}` : ""}`);
+        return;
+      }
+      setState("reconnecting");
+      setTimeout(() => {
+        if (manualClose.current || socket.current !== ws) return;
+        void reconnect.current().catch(() => {
+          setState("text");
+          setError("自动重连失败，已切换到文字模式");
+        });
+      }, decision.delayMs);
+    };
     micAvailable.current = true;
     try {
       const media = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      if (!isCurrent()) {
+        media.getTracks().forEach((track) => track.stop());
+        return;
+      }
       stream.current = media;
       const source = context.createMediaStreamSource(media);
       const node = context.createScriptProcessor(4096, 1, 1);
@@ -211,22 +268,13 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
         ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: floatToPcm16(audioEvent.inputBuffer.getChannelData(0), context.sampleRate) }));
       };
     } catch {
+      if (!isCurrent()) return;
       micAvailable.current = false;
     }
-    ws.onmessage = handleMessage;
-    ws.onerror = () => setError("实时连接异常，正在尝试恢复");
-    ws.onclose = () => {
-      sessionReady.current = false;
-      if (timer.current) { clearInterval(timer.current); timer.current = null; }
-      if (manualClose.current) return;
-      void saveEvent({ type: "connection", payload: { state: "disconnected", atMs: elapsedMs.current } });
-      setState("reconnecting");
-      processor.current?.disconnect();
-      stream.current?.getTracks().forEach((track) => track.stop());
-      void audio.current?.close();
-      setTimeout(() => void reconnect.current().catch(() => setError("自动重连失败，请结束本轮后重试")), 1500);
-    };
-  }, [handleMessage, interviewId, saveEvent]);
+    if (!isCurrent()) return;
+    micPermissionSettled.current = true;
+    beginSession();
+  }, [beginSession, handleMessage, interviewId, saveEvent]);
   reconnect.current = connect;
 
   const sendText = useCallback(async (text: string) => {
@@ -245,7 +293,10 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
 
   const disconnect = useCallback(async () => {
     manualClose.current = true;
+    connectionGeneration.current += 1;
     sessionReady.current = false;
+    micPermissionSettled.current = false;
+    sessionStarted.current = false;
     if (timer.current) { clearInterval(timer.current); timer.current = null; }
     processor.current?.disconnect();
     stream.current?.getTracks().forEach((track) => track.stop());
@@ -261,6 +312,10 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     transcriptRef.current = [];
     eventQueue.current = [];
     topicQuestionDepth.current = 0;
+    reconnectAttempts.current = 0;
+    connectionGeneration.current += 1;
+    micPermissionSettled.current = false;
+    sessionStarted.current = false;
     elapsedMs.current = 0;
     lastRole.current = "chair";
     stopAudio();

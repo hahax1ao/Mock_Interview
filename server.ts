@@ -5,6 +5,7 @@ import { consumeRealtimeToken } from "./src/lib/realtime-tokens";
 import { interviewerPrompt } from "./src/lib/interviewer-prompt";
 import { buildInterviewContext } from "./src/lib/interview-context";
 import { models } from "./src/lib/models";
+import { RealtimeRelayTranslator } from "./src/lib/realtime-relay";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME ?? "127.0.0.1";
@@ -37,6 +38,8 @@ async function start() {
 
     try {
       const context = await buildInterviewContext(browser.interviewId);
+      const baseInstructions = interviewerPrompt + context;
+      const translator = new RealtimeRelayTranslator(baseInstructions);
       const target = new URL(realtimeEndpoint());
       target.searchParams.set("model", models.realtime);
       const upstream = new WebSocket(target, { headers: { Authorization: `Bearer ${apiKey}` } });
@@ -47,7 +50,7 @@ async function start() {
           type: "session.update",
           session: {
             modalities: ["text", "audio"],
-            instructions: interviewerPrompt + context,
+            instructions: baseInstructions,
             voice: process.env.QWEN_VOICE ?? "Tina",
             input_audio_format: "pcm",
             output_audio_format: "pcm",
@@ -61,15 +64,32 @@ async function start() {
 
       browser.on("message", (data) => {
         const payload = Buffer.isBuffer(data) ? data : data.toString();
-        if (upstream.readyState === WebSocket.OPEN) upstream.send(payload);
-        else if (upstream.readyState === WebSocket.CONNECTING) pending.push(payload);
+        for (const message of translator.fromBrowser(payload.toString())) {
+          if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+          else if (upstream.readyState === WebSocket.CONNECTING) pending.push(message);
+        }
       });
       upstream.on("message", (data) => {
-        if (browser.readyState === WebSocket.OPEN) browser.send(data.toString());
+        const translated = translator.fromUpstream(data.toString());
+        for (const message of translated.toBrowser) {
+          if (browser.readyState === WebSocket.OPEN) browser.send(message);
+        }
+        for (const message of translated.toUpstream) {
+          if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+        }
       });
-      upstream.on("close", (code, reason) => browser.close(code || 1011, reason.toString()));
-      upstream.on("error", () => browser.close(1011, "Bailian realtime connection failed"));
-      browser.on("close", () => upstream.close());
+      upstream.on("close", (code, reason) => {
+        console.warn("[realtime] upstream closed", code, reason.toString());
+        browser.close(code || 1011, reason.toString());
+      });
+      upstream.on("error", (error) => {
+        console.error("[realtime] upstream error", error.message);
+        browser.close(1011, "Bailian realtime connection failed");
+      });
+      browser.on("close", (code, reason) => {
+        console.warn("[realtime] browser closed", code, reason.toString());
+        upstream.close();
+      });
     } catch (error) {
       browser.close(1011, error instanceof Error ? error.message : "Realtime initialization failed");
     }

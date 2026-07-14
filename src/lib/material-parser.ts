@@ -1,6 +1,7 @@
 import { extname } from "node:path";
 import mammoth from "mammoth";
 import { createWorker } from "tesseract.js";
+import { getEmbeddedPdfWorker } from "./pdf-worker";
 
 export interface ParsedPage {
   page: number;
@@ -10,6 +11,7 @@ export interface ParsedPage {
 async function parsePdf(buffer: Buffer): Promise<ParsedPage[]> {
   const pdf: any = await import("pdf-parse");
   if (pdf.PDFParse) {
+    pdf.PDFParse.setWorker(await getEmbeddedPdfWorker());
     const parser = new pdf.PDFParse({ data: buffer });
     try {
       const result = await parser.getText();

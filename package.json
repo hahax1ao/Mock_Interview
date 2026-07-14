@@ -20,6 +20,7 @@
     "next": "latest",
     "openai": "latest",
     "pdf-parse": "latest",
+    "pdfjs-dist": "^5.4.296",
     "react": "latest",
     "react-dom": "latest",
     "tesseract.js": "latest",
@@ -49,5 +50,8 @@
     "tsx": "latest",
     "typescript": "^5.9.3",
     "vitest": "latest"
+  },
+  "optionalDependencies": {
+    "@napi-rs/canvas-win32-x64-msvc": "^0.1.80"
   }
 }
