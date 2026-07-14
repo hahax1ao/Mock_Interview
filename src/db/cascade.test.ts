@@ -1,7 +1,11 @@
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { deleteMaterial } from "@/app/api/materials/[id]/route";
+import { resolveLocalStorageRoot } from "@/lib/local-storage";
 import { db, initDatabase } from "./client";
-import { interviewEvents, interviews, reviewReports } from "./schema";
+import { interviewEvents, interviews, materialChunks, materials, profileFacts, reviewReports } from "./schema";
 
 describe("interview cascade deletion", () => {
   it("removes transcripts and derived review reports", async () => {
@@ -39,4 +43,83 @@ describe("interview cascade deletion", () => {
     await db.insert(interviewEvents).values(event).onConflictDoNothing();
     expect(await db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, interviewId))).toHaveLength(1);
     await db.delete(interviews).where(eq(interviews.id, interviewId));
-  });});
+  });
+
+  it("removes material chunks and facts while preserving interview history snapshots", async () => {
+    await initDatabase();
+    const materialId = crypto.randomUUID();
+    const interviewId = crypto.randomUUID();
+    await db.insert(materials).values({
+      id: materialId, name: "resume.pdf", category: "personal", mimeType: "application/pdf",
+      filePath: `uploads/${materialId}/resume.pdf`, status: "ready", createdAt: Date.now(),
+    });
+    await db.insert(materialChunks).values({
+      id: crypto.randomUUID(), materialId, source: "resume.pdf", page: 1,
+      text: "education", start: 0, end: 9,
+    });
+    await db.insert(profileFacts).values({
+      id: crypto.randomUUID(), materialId, field: "major", value: "CS", source: "resume.pdf",
+      confidence: 1, confirmed: true,
+    });
+    await db.insert(interviews).values({
+      id: interviewId, status: "finished", duration: 10, focus: "history", pressure: "adaptive",
+      materialIds: [materialId], plan: [], createdAt: Date.now(),
+    });
+
+    await db.transaction(async (tx) => {
+      await tx.delete(materials).where(eq(materials.id, materialId));
+    });
+
+    expect(await db.select().from(materialChunks).where(eq(materialChunks.materialId, materialId))).toHaveLength(0);
+    expect(await db.select().from(profileFacts).where(eq(profileFacts.materialId, materialId))).toHaveLength(0);
+    const [history] = await db.select().from(interviews).where(eq(interviews.id, interviewId));
+    expect(history.materialIds).toEqual([materialId]);
+    await db.delete(interviews).where(eq(interviews.id, interviewId));
+  });
+});
+
+
+describe("DELETE /api/materials/:id", () => {
+  it("returns 404 when the material does not exist", async () => {
+    const response = await deleteMaterial(
+      new Request("http://localhost/api/materials/missing", { method: "DELETE" }),
+      { params: Promise.resolve({ id: crypto.randomUUID() }) },
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it("deletes the material through the database cascade and removes its upload", async () => {
+    await initDatabase();
+    const materialId = crypto.randomUUID();
+    const storageRoot = resolveLocalStorageRoot();
+    const uploadDirectory = join(storageRoot, "uploads", materialId);
+    const filePath = join(uploadDirectory, "resume.pdf");
+    await mkdir(uploadDirectory, { recursive: true });
+    await writeFile(filePath, "resume");
+    await db.insert(materials).values({
+      id: materialId, name: "resume.pdf", category: "personal", mimeType: "application/pdf",
+      filePath, status: "ready", createdAt: Date.now(),
+    });
+    await db.insert(materialChunks).values({
+      id: crypto.randomUUID(), materialId, source: "resume.pdf", page: 1,
+      text: "education", start: 0, end: 9,
+    });
+
+    try {
+      const response = await deleteMaterial(
+        new Request(`http://localhost/api/materials/${materialId}`, { method: "DELETE" }),
+        { params: Promise.resolve({ id: materialId }) },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ deletedId: materialId, cleanupPending: false });
+      expect(await db.select().from(materials).where(eq(materials.id, materialId))).toHaveLength(0);
+      expect(await db.select().from(materialChunks).where(eq(materialChunks.materialId, materialId))).toHaveLength(0);
+      await expect(readdir(uploadDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await db.delete(materials).where(eq(materials.id, materialId));
+      await rm(uploadDirectory, { recursive: true, force: true });
+    }
+  });
+});

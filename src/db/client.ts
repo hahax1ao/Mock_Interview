@@ -4,6 +4,7 @@ import * as schema from "./schema";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { migrateLegacyDatabase, resolveLocalStorageRoot } from "@/lib/local-storage";
+import { cleanupMaterialTrash } from "@/lib/material-deletion";
 
 const storageRoot = resolveLocalStorageRoot();
 const databasePath = join(storageRoot, "baoyan.db");
@@ -60,6 +61,13 @@ export function initDatabase() {
       } catch (error) {
         if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
       }
+    }
+    try {
+      await cleanupMaterialTrash(storageRoot);
+    } catch (error) {
+      const errorClass = error instanceof Error ? error.name : typeof error;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Material trash cleanup failed: ${errorClass}: ${message}`);
     }
   })();
   return initialized;
