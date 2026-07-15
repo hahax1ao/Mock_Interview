@@ -352,6 +352,10 @@ test("confirmed detailed experience drives research interview", async ({ page })
     } });
   });
   await page.route("**/api/realtime/session", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({
+      interviewId: "7a65ab08-03a7-4ec7-9359-a2ff4670ddea",
+    });
     const confirmed = experiences.find((item) => item.status === "confirmed"
       && selectedMaterialIds.includes(item.materialId));
     sessionResponse = {
