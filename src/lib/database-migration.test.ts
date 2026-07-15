@@ -93,4 +93,26 @@ describe("legacy SQLite migration", () => {
       await db.delete(materials).where(eq(materials.id, materialId));
     }
   });
+  it("enforces one database-owned initial research claim per interview", async () => {
+    const { db, initDatabase } = await import("@/db/client");
+    const { interviewEvents, interviews } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await initDatabase();
+    const interviewId = crypto.randomUUID();
+    await db.insert(interviews).values({
+      id: interviewId, status: "active", duration: 20, focus: "communications",
+      pressure: "adaptive", materialIds: [], plan: {}, startedAt: 1, createdAt: 1,
+    });
+    const claim = (id: string) => db.insert(interviewEvents).values({
+      id, interviewId, type: "research_initial_claim",
+      payload: { status: "pending", leaseUntil: Date.now() + 120_000 }, createdAt: Date.now(),
+    });
+
+    try {
+      await claim(crypto.randomUUID());
+      await expect(claim(crypto.randomUUID())).rejects.toThrow();
+    } finally {
+      await db.delete(interviews).where(eq(interviews.id, interviewId));
+    }
+  });
 });

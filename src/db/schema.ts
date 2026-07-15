@@ -89,7 +89,11 @@ export const interviewEvents = sqliteTable("interview_events", {
   type: text("type").notNull(),
   payload: text("payload", { mode: "json" }).$type<unknown>().notNull(),
   createdAt: integer("created_at").notNull(),
-});
+}, (table) => [
+  uniqueIndex("interview_events_research_initial_claim_unique")
+    .on(table.interviewId, table.type)
+    .where(sql`${table.type} = 'research_initial_claim'`),
+]);
 
 export const reviewReports = sqliteTable("review_reports", {
   id: text("id").primaryKey(),

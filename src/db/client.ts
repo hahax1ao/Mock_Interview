@@ -1,5 +1,5 @@
 import { createClient } from "@libsql/client";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
 import { mkdirSync } from "node:fs";
@@ -17,6 +17,37 @@ migrateLegacyDatabase(legacyDatabasePath, databasePath);
 
 const client = createClient({ url: `file:${databasePath}` });
 export const db = drizzle(client, { schema });
+
+type StoredResearchClaim = {
+  id: string;
+  interviewId: string;
+  payload: unknown;
+  createdAt: number;
+};
+
+function isCompletedResearchClaim(payload: unknown) {
+  return Boolean(payload && typeof payload === "object" && "status" in payload && payload.status === "completed");
+}
+
+export async function reconcileResearchInitialClaims() {
+  const rows = await db.select({
+    id: schema.interviewEvents.id,
+    interviewId: schema.interviewEvents.interviewId,
+    payload: schema.interviewEvents.payload,
+    createdAt: schema.interviewEvents.createdAt,
+  }).from(schema.interviewEvents).where(eq(schema.interviewEvents.type, "research_initial_claim"));
+  const grouped = new Map<string, StoredResearchClaim[]>();
+  for (const row of rows) grouped.set(row.interviewId, [...(grouped.get(row.interviewId) ?? []), row]);
+  const obsoleteIds = [...grouped.values()].flatMap((claims) => claims
+    .sort((left, right) => Number(isCompletedResearchClaim(right.payload)) - Number(isCompletedResearchClaim(left.payload))
+      || right.createdAt - left.createdAt
+      || right.id.localeCompare(left.id))
+    .slice(1)
+    .map(({ id }) => id));
+  if (obsoleteIds.length > 0) {
+    await db.delete(schema.interviewEvents).where(inArray(schema.interviewEvents.id, obsoleteIds));
+  }
+}
 
 export async function backfillExperienceNormalizedKeys() {
   const rows = await db.select().from(schema.profileExperiences);
@@ -107,6 +138,8 @@ export function initDatabase() {
     }
     await backfillExperienceNormalizedKeys();
     await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS profile_experiences_draft_key_unique ON profile_experiences(material_id, type, normalized_key) WHERE status = 'draft' AND normalized_key IS NOT NULL");
+    await reconcileResearchInitialClaims();
+    await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS interview_events_research_initial_claim_unique ON interview_events(interview_id, type) WHERE type = 'research_initial_claim'");
     await reconcileMaterialHashReservations();
     try {
       await cleanupMaterialTrash(storageRoot);
