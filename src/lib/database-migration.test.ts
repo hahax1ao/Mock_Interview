@@ -60,4 +60,37 @@ describe("legacy SQLite migration", () => {
       "confidence", "status", "created_at", "updated_at",
     ]));
   });
+  it("backfills duplicate draft keys without deleting legacy rows", async () => {
+    const { db, initDatabase, backfillExperienceNormalizedKeys } = await import("@/db/client");
+    const { materials, profileExperiences } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    await initDatabase();
+    const materialId = `migration-${crypto.randomUUID()}`;
+    await db.insert(materials).values({
+      id: materialId, name: "legacy.txt", category: "personal", mimeType: "text/plain",
+      filePath: "legacy.txt", status: "ready", contentHash: crypto.randomUUID(),
+      parseStatus: "basic_only", createdAt: 1,
+    });
+    const base = {
+      materialId, type: "project" as const, background: "", responsibilities: "", methods: "",
+      results: "", awardRole: "", source: "legacy.txt", page: 1,
+      evidence: { title: "Atlas" }, confidence: 0.8, status: "draft" as const, createdAt: 1,
+    };
+    await db.insert(profileExperiences).values([
+      { ...base, id: "legacy-old", title: " Atlas ", updatedAt: 10 },
+      { ...base, id: "legacy-new", title: "\uFF21\uFF54\uFF4C\uFF41\uFF53", updatedAt: 20 },
+    ]);
+    try {
+      await backfillExperienceNormalizedKeys();
+      const rows = await db.select().from(profileExperiences)
+        .where(eq(profileExperiences.materialId, materialId));
+      expect(rows).toHaveLength(2);
+      expect(Object.fromEntries(rows.map((row) => [row.id, row.normalizedKey]))).toEqual({
+        "legacy-new": "atlas",
+        "legacy-old": "atlas#legacy:legacy-old",
+      });
+    } finally {
+      await db.delete(materials).where(eq(materials.id, materialId));
+    }
+  });
 });

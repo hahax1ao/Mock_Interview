@@ -109,5 +109,86 @@ describe("POST material smart-extraction retry", () => {
       createdAt: 10,
       updatedAt: 20,
     }));
+
+    const laterRetry = await POST(new Request("http://localhost/api/materials/retry"), {
+      params: Promise.resolve({ id: materialId }),
+    });
+    expect(laterRetry.status).toBe(200);
+    const afterLaterRetry = await db.select().from(profileExperiences)
+      .where(eq(profileExperiences.materialId, materialId));
+    expect(afterLaterRetry).toHaveLength(1);
+    expect(afterLaterRetry[0]).toEqual(expect.objectContaining({
+      status: "confirmed",
+      methods: "confirmed user edit",
+    }));
+  });
+  it("deduplicates the same draft across concurrent retries", async () => {
+    await initDatabase();
+    const materialId = `retry-${crypto.randomUUID()}`;
+    materialIds.push(materialId);
+    await db.insert(materials).values({
+      id: materialId,
+      name: "resume.txt",
+      category: "personal",
+      mimeType: "text/plain",
+      filePath: "resume.txt",
+      status: "ready",
+      contentHash: crypto.randomUUID(),
+      parseStatus: "basic_only",
+      createdAt: 1,
+    });
+    await db.insert(materialChunks).values({
+      id: `chunk-${crypto.randomUUID()}`,
+      materialId,
+      source: "resume.txt",
+      page: 1,
+      text: "Atlas model evidence",
+      start: 0,
+      end: 20,
+    });
+
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let bothStarted!: () => void;
+    const ready = new Promise<void>((resolve) => { bothStarted = resolve; });
+    extractSmartMaterialProfile.mockImplementation(async () => {
+      started += 1;
+      if (started === 2) bothStarted();
+      await gate;
+      return {
+        facts: [],
+        experiences: [{
+          type: "project" as const,
+          title: " Atlas ",
+          background: "model background",
+          responsibilities: "model responsibilities",
+          methods: "model method",
+          results: "model result",
+          awardRole: "",
+          source: "resume.txt",
+          page: 1,
+          evidence: { title: "Atlas", methods: "model evidence" },
+          confidence: 0.8,
+        }],
+      };
+    });
+
+    const first = POST(new Request("http://localhost/api/materials/retry"), {
+      params: Promise.resolve({ id: materialId }),
+    });
+    const second = POST(new Request("http://localhost/api/materials/retry"), {
+      params: Promise.resolve({ id: materialId }),
+    });
+    await ready;
+    release();
+
+    const responses = await Promise.all([first, second]);
+    const responseBodies = await Promise.all(responses.map((response) => response.clone().json()));
+    expect(responses.map((response) => response.status), JSON.stringify(responseBodies)).toEqual([200, 200]);
+    const persisted = await db.select().from(profileExperiences)
+      .where(eq(profileExperiences.materialId, materialId));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toEqual(expect.objectContaining({ title: " Atlas ", status: "draft" }));
   });
 });

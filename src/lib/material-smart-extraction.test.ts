@@ -94,6 +94,47 @@ describe("smart material extraction", () => {
     expect(invoke).toHaveBeenCalledOnce();
   });
 
+  it("removes contact data before invocation and from extracted experience fields", async () => {
+    const privatePages = [{ page: 1, text: [
+      "联系方式：13800138000",
+      "邮箱：candidate@example.com",
+      "地址：某省某市某街道 8 号",
+      "科研经历",
+      "匿名通信课题",
+      "负责搭建测试链路并验证算法",
+      "结果：吞吐率提升 20%",
+    ].join("\n") }];
+    const invoke = vi.fn<SmartExtractionInvoke>(async ({ user }) => {
+      expect(user).not.toContain("13800138000");
+      expect(user).not.toContain("candidate@example.com");
+      expect(user).not.toContain("某省某市某街道");
+      return { facts: [], experiences: [{
+        type: "research", title: "匿名通信课题", background: "",
+        responsibilities: "负责搭建测试链路并验证算法",
+        methods: "联系 13800138000 获取数据", results: "吞吐率提升 20%", awardRole: "", page: 1,
+        evidence: {
+          title: "匿名通信课题",
+          responsibilities: "负责搭建测试链路并验证算法",
+          methods: "13800138000",
+          results: "吞吐率提升 20%",
+        }, confidence: 0.8,
+      }, {
+        type: "project", title: "13800138000", background: "",
+        responsibilities: "", methods: "", results: "20%", awardRole: "", page: 1,
+        evidence: { title: "13800138000", results: "20%" }, confidence: 0.7,
+      }] };
+    });
+
+    const result = await extractSmartMaterialProfile(privatePages, "private.pdf", invoke);
+
+    expect(result.experiences).toEqual([expect.objectContaining({
+      title: "匿名通信课题",
+      responsibilities: "负责搭建测试链路并验证算法",
+      methods: "",
+      results: "吞吐率提升 20%",
+      evidence: expect.not.objectContaining({ methods: expect.anything() }),
+    })]);
+  });
   it("deduplicates cards by normalized type and title", async () => {
     const duplicate = {
       ...researchCard,
@@ -132,7 +173,7 @@ describe("smart material extraction", () => {
     expect(result.experiences.map((item) => item.title)).toEqual([embeddedCard.title]);
   });
 
-  it("removes unsupported detail evidence while retaining a valid card", async () => {
+  it("clears a detail with unsupported evidence while retaining the valid parts of the card", async () => {
     const invalid = {
       ...researchCard, methods: "使用量子算法",
       evidence: { ...researchCard.evidence, methods: "量子算法" },
@@ -140,7 +181,16 @@ describe("smart material extraction", () => {
     const result = await extractSmartMaterialProfile(experiencePages, "resume.pdf", async () => ({
       facts: [], experiences: [invalid, embeddedCard],
     }));
-    expect(result.experiences.map((item) => item.title)).toEqual([embeddedCard.title]);
+    expect(result.experiences).toEqual([
+      expect.objectContaining({
+        title: researchCard.title,
+        background: researchCard.background,
+        methods: "",
+        results: researchCard.results,
+        evidence: expect.not.objectContaining({ methods: expect.anything() }),
+      }),
+      expect.objectContaining({ title: embeddedCard.title }),
+    ]);
   });
 
   it("removes an invalid page while retaining a valid card", async () => {
@@ -339,4 +389,67 @@ describe("smart material extraction", () => {
     expect(options.timeoutMs).toBe(120_000);
   });
 
+  it("extracts more than thirty experiences across bounded chunks", async () => {
+    const manyPages = Array.from({ length: 36 }, (_, index) => ({
+      page: index + 1,
+      text: `Project ${index + 1}\nResponsible for module ${index + 1}`,
+    }));
+    const invoke = vi.fn<SmartExtractionInvoke>(async ({ user, schema, maxTokens }) => {
+      expect(maxTokens).toBeGreaterThanOrEqual(4_000);
+      const pageNumbers = [...user.matchAll(/\[\u7b2c (\d+) \u9875\]/gu)].map((match) => Number(match[1]));
+      const experiences = pageNumbers.map((page) => ({
+        type: "project" as const,
+        title: `Project ${page}`,
+        background: "",
+        responsibilities: `Responsible for module ${page}`,
+        methods: "",
+        results: "",
+        awardRole: "",
+        page,
+        evidence: { title: `Project ${page}`, responsibilities: `Responsible for module ${page}` },
+        confidence: 0.8,
+      }));
+      return schema.parse({ facts: [], experiences });
+    });
+
+    const result = await extractSmartMaterialProfile(manyPages, "many.pdf", invoke);
+
+    expect(invoke.mock.calls.length).toBeGreaterThan(1);
+    expect(result.experiences).toHaveLength(36);
+    expect(result.experiences.at(-1)?.title).toBe("Project 36");
+  });
+
+  it("keeps successful experience chunks when one chunk fails", async () => {
+    const manyPages = Array.from({ length: 24 }, (_, index) => ({
+      page: index + 1,
+      text: `Research ${index + 1}\nResponsible for test ${index + 1}`,
+    }));
+    let call = 0;
+    const invoke = vi.fn<SmartExtractionInvoke>(async ({ user }) => {
+      call += 1;
+      if (call === 2) throw new Error("one chunk unavailable");
+      const pageNumbers = [...user.matchAll(/\[\u7b2c (\d+) \u9875\]/gu)].map((match) => Number(match[1]));
+      return {
+        facts: [],
+        experiences: pageNumbers.map((page) => ({
+          type: "research" as const,
+          title: `Research ${page}`,
+          background: "",
+          responsibilities: `Responsible for test ${page}`,
+          methods: "",
+          results: "",
+          awardRole: "",
+          page,
+          evidence: { title: `Research ${page}`, responsibilities: `Responsible for test ${page}` },
+          confidence: 0.8,
+        })),
+      };
+    });
+
+    const result = await extractSmartMaterialProfile(manyPages, "partial.pdf", invoke);
+
+    expect(invoke.mock.calls.length).toBeGreaterThan(2);
+    expect(result.experiences.length).toBeGreaterThan(0);
+    expect(result.experiences.length).toBeLessThan(24);
+  });
 });

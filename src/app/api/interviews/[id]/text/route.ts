@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
 import { interviewEvents, interviews } from "@/db/schema";
@@ -25,11 +25,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!interview || !["ready", "active"].includes(interview.status)) {
       return NextResponse.json({ error: "场次不存在或已结束" }, { status: 409 });
     }
-    const [context, recent, researchInstruction] = await Promise.all([
+    const [context, recent, priorTranscripts] = await Promise.all([
       buildInterviewContext(id),
       db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, id)).orderBy(desc(interviewEvents.createdAt)).limit(12),
-      input.role === "research" ? buildResearchHandoffInstruction(id) : Promise.resolve(undefined),
+      db.select({ payload: interviewEvents.payload }).from(interviewEvents).where(and(
+        eq(interviewEvents.interviewId, id),
+        eq(interviewEvents.type, "transcript"),
+      )),
     ]);
+    const hasPriorResearchQuestion = priorTranscripts.some(({ payload }) =>
+      typeof payload === "object" && payload !== null && "role" in payload && payload.role === "research",
+    );
+    const researchInstruction = input.role === "research" && !hasPriorResearchQuestion
+      ? await buildResearchHandoffInstruction(id)
+      : undefined;
     const history = recent.reverse().filter((event) => event.type === "transcript").map((event) => JSON.stringify(event.payload)).join("\n");
     const completion = await qwenClient().chat.completions.create({
       model: models.expressionReview,

@@ -1,5 +1,6 @@
 import type { ExperienceEvidence } from "@/domain/experiences";
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const materials = sqliteTable("materials", {
   id: text("id").primaryKey(),
@@ -49,6 +50,7 @@ export const profileExperiences = sqliteTable("profile_experiences", {
   materialId: text("material_id").notNull().references(() => materials.id, { onDelete: "cascade" }),
   type: text("type").$type<"research" | "project" | "competition">().notNull(),
   title: text("title").notNull(),
+  normalizedKey: text("normalized_key"),
   background: text("background").notNull().default(""),
   responsibilities: text("responsibilities").notNull().default(""),
   methods: text("methods").notNull().default(""),
@@ -61,7 +63,11 @@ export const profileExperiences = sqliteTable("profile_experiences", {
   status: text("status").$type<"draft" | "confirmed">().notNull().default("draft"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
-});
+}, (table) => [
+  uniqueIndex("profile_experiences_draft_key_unique")
+    .on(table.materialId, table.type, table.normalizedKey)
+    .where(sql`${table.status} = 'draft' AND ${table.normalizedKey} IS NOT NULL`),
+]);
 
 export const interviews = sqliteTable("interviews", {
   id: text("id").primaryKey(),

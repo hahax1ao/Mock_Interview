@@ -1,4 +1,5 @@
 import { createClient } from "@libsql/client";
+import { and, eq, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "./schema";
 import { mkdirSync } from "node:fs";
@@ -6,6 +7,7 @@ import { dirname, join } from "node:path";
 import { migrateLegacyDatabase, resolveLocalStorageRoot } from "@/lib/local-storage";
 import { cleanupMaterialTrash } from "@/lib/material-deletion";
 import { reconcileMaterialHashReservations } from "@/lib/material-reservations";
+import { planLegacyDraftKeys } from "@/lib/experience-normalization";
 
 const storageRoot = resolveLocalStorageRoot();
 const databasePath = join(storageRoot, "baoyan.db");
@@ -16,11 +18,25 @@ migrateLegacyDatabase(legacyDatabasePath, databasePath);
 const client = createClient({ url: `file:${databasePath}` });
 export const db = drizzle(client, { schema });
 
+export async function backfillExperienceNormalizedKeys() {
+  const rows = await db.select().from(schema.profileExperiences);
+  const planned = planLegacyDraftKeys(rows);
+  for (const [id, normalizedKey] of planned) {
+    await db.update(schema.profileExperiences)
+      .set({ normalizedKey })
+      .where(and(
+        eq(schema.profileExperiences.id, id),
+        isNull(schema.profileExperiences.normalizedKey),
+      ));
+  }
+}
+
 let initialized: Promise<void> | undefined;
 
 export function initDatabase() {
   initialized ??= (async () => {
     await client.execute("PRAGMA foreign_keys = ON");
+    await client.execute("PRAGMA busy_timeout = 5000");
     await client.executeMultiple(`
       CREATE TABLE IF NOT EXISTS materials (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, mime_type TEXT NOT NULL,
@@ -43,6 +59,7 @@ export function initDatabase() {
         material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
         type TEXT NOT NULL,
         title TEXT NOT NULL,
+        normalized_key TEXT,
         background TEXT NOT NULL DEFAULT '',
         responsibilities TEXT NOT NULL DEFAULT '',
         methods TEXT NOT NULL DEFAULT '',
@@ -79,6 +96,7 @@ export function initDatabase() {
       "ALTER TABLE profile_facts ADD COLUMN evidence TEXT DEFAULT ''",
       "ALTER TABLE profile_facts ADD COLUMN page INTEGER DEFAULT 1",
       "ALTER TABLE profile_facts ADD COLUMN extractor TEXT DEFAULT 'local'",
+      "ALTER TABLE profile_experiences ADD COLUMN normalized_key TEXT",
     ];
     for (const migration of migrations) {
       try {
@@ -87,6 +105,8 @@ export function initDatabase() {
         if (!(error instanceof Error) || !/duplicate column/i.test(error.message)) throw error;
       }
     }
+    await backfillExperienceNormalizedKeys();
+    await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS profile_experiences_draft_key_unique ON profile_experiences(material_id, type, normalized_key) WHERE status = 'draft' AND normalized_key IS NOT NULL");
     await reconcileMaterialHashReservations();
     try {
       await cleanupMaterialTrash(storageRoot);
