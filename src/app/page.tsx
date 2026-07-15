@@ -4,6 +4,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { InterviewClock, createInterviewPlan } from "@/domain/interview-plan";
 import { useRealtimeInterview } from "@/hooks/use-realtime-interview";
 import { keepSuccessfulDeletionNotice } from "@/lib/material-page-actions";
+import { ExperienceCards } from "@/components/experience-cards";
+import type { ExperienceEditable, ProfileExperience } from "@/domain/experiences";
 
 type Material = { id: string; name: string; category: string; status: string; parseStatus: "complete" | "basic_only" | string; createdAt: number };
 type ProfileFact = { id: string; materialId: string | null; field: string; value: string; source: string; confidence: number; confirmed: boolean };
@@ -27,6 +29,7 @@ export default function Home() {
   const [view, setView] = useState<"dashboard" | "materials" | "history">("dashboard");
   const [materials, setMaterials] = useState<Material[]>([]);
   const [facts, setFacts] = useState<ProfileFact[]>([]);
+  const [experiences, setExperiences] = useState<ProfileExperience[]>([]);
   const [factValues, setFactValues] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<Interview[]>([]);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
@@ -40,6 +43,7 @@ export default function Home() {
   const [textAnswer, setTextAnswer] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [experienceBusyId, setExperienceBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [reviewing, setReviewing] = useState(false);
@@ -62,6 +66,7 @@ export default function Home() {
       const body = await materialResponse.json();
       setMaterials(body.materials);
       setFacts(body.facts ?? []);
+      setExperiences(body.experiences ?? []);
       setFactValues((current) => Object.fromEntries((body.facts ?? []).map((fact: ProfileFact) => [fact.id, current[fact.id] ?? fact.value])));
     }
     if (interviewResponse.ok) setHistory((await interviewResponse.json()).interviews);
@@ -128,6 +133,7 @@ export default function Home() {
       const removedFactIds = new Set(facts.filter((fact) => fact.materialId === item.id).map((fact) => fact.id));
       setMaterials((current) => current.filter((material) => material.id !== item.id));
       setFacts((current) => current.filter((fact) => fact.materialId !== item.id));
+      setExperiences((current) => current.filter((experience) => experience.materialId !== item.id));
       setSelected((current) => current.filter((id) => id !== item.id));
       setFactValues((current) => Object.fromEntries(
         Object.entries(current).filter(([id]) => !removedFactIds.has(id)),
@@ -154,6 +160,41 @@ export default function Home() {
   }
 
 
+  async function updateExperience(
+    id: string,
+    method: "PATCH" | "POST",
+    value: ExperienceEditable,
+    suffix = "",
+  ) {
+    if (experienceBusyId) return;
+    setExperienceBusyId(id);
+    try {
+      const response = await fetch(`/api/experiences/${id}${suffix}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(value),
+      });
+      const body = response.headers.get("content-type")?.includes("application/json")
+        ? await response.json()
+        : {};
+      if (!response.ok) {
+        setNotice(body.error ?? "详细经历更新失败，请稍后重试");
+        throw new Error(body.error ?? "experience update failed");
+      }
+      setNotice(method === "POST" ? "详细经历已确认" : "详细经历已保存");
+      await refresh();
+    } finally {
+      setExperienceBusyId(null);
+    }
+  }
+
+  async function saveExperience(id: string, value: ExperienceEditable) {
+    return updateExperience(id, "PATCH", value);
+  }
+
+  async function confirmExperience(id: string, value: ExperienceEditable) {
+    return updateExperience(id, "POST", value, "/confirm");
+  }
   async function confirmFact(fact: ProfileFact) {
     if (!fact.materialId) return;
     const response = await fetch("/api/materials/" + fact.materialId + "/confirm", {
@@ -287,7 +328,7 @@ export default function Home() {
 
       {view === "materials" && <section className="materials-layout">
         <form className="card upload" onSubmit={upload}><div className="section-title"><div><span>01</span><h2>上传材料</h2></div></div><div className="drop"><div>⇧</div><b>选择本地文件</b><p>PDF / DOCX / JPG / PNG / TXT / MD，最大 20MB</p><input required name="file" type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,.txt,.md" /></div><label>材料类别</label><select name="category"><option value="personal">个人材料</option><option value="target">目标院校</option><option value="reference">专业参考资料</option></select><button className="primary" type="submit"><span>本地解析并建立索引</span><b>→</b></button></form>
-        <div className="card library"><div className="section-title"><div><span>02</span><h2>本地材料库</h2></div><p>{materials.length} 份</p></div>{materials.length ? materials.map((item) => <div className="file-row" key={item.id}><div className="file-icon">文</div><div className="file-meta"><b>{item.name}</b><small>{item.category} · {new Date(item.createdAt).toLocaleString()}</small></div><div className="file-controls"><span className={item.parseStatus === "basic_only" ? "pending" : ""}>{item.parseStatus === "basic_only" ? "智能解析待重试" : "已索引"}</span>{item.category === "personal" && item.parseStatus === "basic_only" && <button type="button" className="retry-material" aria-label={`重试智能解析 ${item.name}`} disabled={retryingId === item.id} onClick={() => void retryMaterial(item)}>{retryingId === item.id ? "重试中" : "重试"}</button>}<button type="button" className="delete-material" aria-label={`删除 ${item.name}`} disabled={deletingId === item.id} onClick={() => void deleteMaterial(item)}>{deletingId === item.id ? "删除中" : "删除"}</button></div></div>) : <div className="empty">尚未上传材料。</div>}<div className="facts-title"><b>个人画像事实</b><small>低置信度与冲突信息需人工确认</small></div>{facts.length ? facts.map((fact) => <div className={"fact-row " + (fact.confirmed ? "confirmed" : "")} key={fact.id}><label htmlFor={`fact-${fact.id}`}>{fact.field}<small>{Math.round(fact.confidence * 100)}% · {fact.source}</small></label><input id={`fact-${fact.id}`} value={factValues[fact.id] ?? fact.value} disabled={fact.confirmed} onChange={(event) => setFactValues((values) => ({ ...values, [fact.id]: event.target.value }))} />{fact.confirmed ? <span>已确认</span> : <button onClick={() => void confirmFact(fact)}>确认</button>}</div>) : <div className="empty compact">上传简历或成绩单后自动提取课程、成绩、项目、科研、竞赛、技能与英语信息。</div>}</div>
+        <div className="card library"><div className="section-title"><div><span>02</span><h2>本地材料库</h2></div><p>{materials.length} 份</p></div>{materials.length ? materials.map((item) => <div className="file-row" key={item.id}><div className="file-icon">文</div><div className="file-meta"><b>{item.name}</b><small>{item.category} · {new Date(item.createdAt).toLocaleString()}</small></div><div className="file-controls"><span className={item.parseStatus === "basic_only" ? "pending" : ""}>{item.parseStatus === "basic_only" ? "智能解析待重试" : "已索引"}</span>{item.category === "personal" && <button type="button" className="retry-material" aria-label={item.parseStatus === "basic_only" ? `重试智能解析 ${item.name}` : `重新提取详细经历 ${item.name}`} disabled={retryingId === item.id} onClick={() => void retryMaterial(item)}>{retryingId === item.id ? "提取中" : item.parseStatus === "basic_only" ? "重试" : "重新提取"}</button>}<button type="button" className="delete-material" aria-label={`删除 ${item.name}`} disabled={deletingId === item.id} onClick={() => void deleteMaterial(item)}>{deletingId === item.id ? "删除中" : "删除"}</button></div></div>) : <div className="empty">尚未上传材料。</div>}<div className="facts-title"><b>个人画像事实</b><small>低置信度与冲突信息需人工确认</small></div>{facts.length ? facts.map((fact) => <div className={"fact-row " + (fact.confirmed ? "confirmed" : "")} key={fact.id}><label htmlFor={`fact-${fact.id}`}>{fact.field}<small>{Math.round(fact.confidence * 100)}% · {fact.source}</small></label><input id={`fact-${fact.id}`} value={factValues[fact.id] ?? fact.value} disabled={fact.confirmed} onChange={(event) => setFactValues((values) => ({ ...values, [fact.id]: event.target.value }))} />{fact.confirmed ? <span>已确认</span> : <button onClick={() => void confirmFact(fact)}>确认</button>}</div>) : <div className="empty compact">上传简历或成绩单后自动提取课程、成绩、项目、科研、竞赛、技能与英语信息。</div>}<div className="facts-title experience-section-title"><b>详细经历</b><small>展开补充细节，确认后用于面试追问</small></div>{experiences.length ? <ExperienceCards experiences={experiences} busyId={experienceBusyId} onSave={saveExperience} onConfirm={confirmExperience} /> : <div className="empty compact">从个人材料重新提取科研、项目与竞赛经历。</div>}</div>
       </section>}
 
       {view === "history" && <section className="card history"><div className="section-title"><div><span>01</span><h2>可比场次趋势</h2></div><p>同方向 · 同时长 · 同压力</p></div><div className="trend-chart">{trend.length ? trend.map((point) => <div key={point.id}><b>{point.totalScore}</b><i style={{ height: `${Math.max(8, point.totalScore)}%` }} /><small>{new Date(point.createdAt).toLocaleDateString()}</small></div>) : <div className="empty">完成至少一轮相同配置的复盘后显示趋势。</div>}</div><div className="section-title records-title"><div><span>02</span><h2>全部模拟记录</h2></div></div>{history.map((item) => <div className="history-row" key={item.id}><div className="score-mini">{item.duration}</div><div><b>{item.focus}</b><small>{new Date(item.createdAt).toLocaleString()} · {item.pressure}</small></div><button onClick={() => void openHistoryReport(item.id)}>{item.status === "reviewed" ? "查看 / 重试" : "重试复盘"}</button></div>)}{!history.length && <div className="empty">还没有面试记录。</div>}</section>}

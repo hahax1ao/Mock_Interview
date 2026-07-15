@@ -168,3 +168,87 @@ test("material library retries basic-only smart parsing and refreshes facts", as
   await expect(page.getByRole("textbox", { name: "" }).last()).toHaveValue("低照度图像增强");
   await expect(page.getByText("智能解析待重试", { exact: true })).toHaveCount(0);
 });
+
+test("detailed experience edits, confirms, becomes read-only, and follows material deletion", async ({ page }) => {
+  const material = {
+    id: "material-detail", name: "super-lora.pdf", category: "personal", status: "ready",
+    parseStatus: "complete", createdAt: 1_767_225_600_000,
+  };
+  const baseExperience = {
+    id: "experience-detail", materialId: material.id, type: "research", title: "Super-LoRa",
+    background: "传统 LoRa 吞吐量受限", responsibilities: "负责算法设计",
+    methods: "并行干扰消除", results: "吞吐量提升 1.2 倍", awardRole: "第一作者",
+    source: material.name, page: 2, evidence: { title: "Super-LoRa" }, confidence: 0.93,
+    status: "draft", createdAt: 1_767_225_600_000, updatedAt: 1_767_225_600_000,
+  };
+  let confirmed = false;
+  let deleted = false;
+  let confirmBody: Record<string, unknown> | undefined;
+
+  await page.route("**/api/materials", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({ json: deleted ? { materials: [], facts: [], experiences: [] } : {
+      materials: [material], facts: [],
+      experiences: [{ ...baseExperience, status: confirmed ? "confirmed" : "draft" }],
+    } });
+  });
+  await page.route("**/api/experiences/experience-detail/confirm", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    confirmBody = route.request().postDataJSON();
+    confirmed = true;
+    await route.fulfill({ json: { experience: { ...baseExperience, ...confirmBody, status: "confirmed" } } });
+  });
+  await page.route("**/api/materials/material-detail", async (route) => {
+    deleted = true;
+    await route.fulfill({ json: { deletedId: material.id, cleanupPending: false } });
+  });
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  await page.getByRole("button", { name: /展开经历.*Super-LoRa/ }).click();
+  await page.getByLabel("量化成果").fill("吞吐量提升 1.35 倍");
+  await page.getByRole("button", { name: "确认整段经历" }).click();
+
+  await expect(page.getByRole("button", { name: "重新编辑" })).toBeVisible();
+  await expect(page.getByLabel("量化成果")).toHaveCount(0);
+  expect(confirmBody).toMatchObject({ results: "吞吐量提升 1.35 倍" });
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: `删除 ${material.name}` }).click();
+  await expect(page.getByText(material.name, { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Super-LoRa", { exact: true })).toHaveCount(0);
+});
+test("re-extracts detailed experiences from a complete personal material", async ({ page }) => {
+  const material = {
+    id: "material-old", name: "old-resume.pdf", category: "personal", status: "ready",
+    parseStatus: "complete", createdAt: 1_735_689_600_000,
+  };
+  const extractedExperience = {
+    id: "experience-old", materialId: material.id, type: "project", title: "旧简历项目",
+    background: "历史材料", responsibilities: "负责实现", methods: "原型验证",
+    results: "准确率 95%", awardRole: "负责人", source: material.name, page: 1,
+    evidence: { title: "旧简历项目" }, confidence: 0.88, status: "draft",
+    createdAt: 1_767_225_600_000, updatedAt: 1_767_225_600_000,
+  };
+  let retried = false;
+  let retryMethod = "";
+
+  await page.route("**/api/materials", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({ json: {
+      materials: [material], facts: [], experiences: retried ? [extractedExperience] : [],
+    } });
+  });
+  await page.route("**/api/materials/material-old/retry", async (route) => {
+    retryMethod = route.request().method();
+    retried = true;
+    await route.fulfill({ json: { materialId: material.id, parseStatus: "complete", experiencesAdded: 1 } });
+  });
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  await page.getByRole("button", { name: `重新提取详细经历 ${material.name}` }).click();
+
+  expect(retryMethod).toBe("POST");
+  await expect(page.getByRole("button", { name: /展开经历.*旧简历项目/ })).toBeVisible();
+});
