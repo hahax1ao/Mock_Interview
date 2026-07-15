@@ -122,6 +122,43 @@ describe("POST material smart-extraction retry", () => {
       methods: "confirmed user edit",
     }));
   });
+  it("updates the canonical normalized draft and never a migrated legacy suffix", async () => {
+    await initDatabase();
+    const materialId = `retry-${crypto.randomUUID()}`;
+    materialIds.push(materialId);
+    await db.insert(materials).values({
+      id: materialId, name: "resume.txt", category: "personal", mimeType: "text/plain",
+      filePath: "resume.txt", status: "ready", contentHash: crypto.randomUUID(), parseStatus: "basic_only", createdAt: 1,
+    });
+    await db.insert(materialChunks).values({
+      id: `chunk-${crypto.randomUUID()}`, materialId, source: "resume.txt", page: 1,
+      text: "Atlas model evidence", start: 0, end: 20,
+    });
+    const base = {
+      materialId, type: "project" as const, background: "original", responsibilities: "original",
+      methods: "old method", results: "original", awardRole: "", source: "resume.txt", page: 1,
+      evidence: { title: "Atlas", methods: "old method" }, confidence: 0.7, status: "draft" as const,
+      createdAt: 10, updatedAt: 10,
+    };
+    await db.insert(profileExperiences).values([
+      { ...base, id: `legacy-${crypto.randomUUID()}`, title: " Atlas ", normalizedKey: "atlas#legacy:old" },
+      { ...base, id: `canonical-${crypto.randomUUID()}`, title: "Ａｔｌａｓ", normalizedKey: "atlas", updatedAt: 20 },
+    ]);
+    extractSmartMaterialProfile.mockResolvedValue({ facts: [], experiences: [{
+      type: "project", title: "Atlas", background: "model background", responsibilities: "model responsibilities",
+      methods: "refreshed method", results: "model result", awardRole: "", source: "resume.txt", page: 1,
+      evidence: { title: "Atlas", methods: "model evidence" }, confidence: 0.8,
+    }] });
+
+    const response = await POST(new Request("http://localhost/api/materials/retry"), {
+      params: Promise.resolve({ id: materialId }),
+    });
+
+    expect(response.status).toBe(200);
+    const persisted = await db.select().from(profileExperiences).where(eq(profileExperiences.materialId, materialId));
+    expect(persisted.find((item) => item.normalizedKey === "atlas")).toEqual(expect.objectContaining({ methods: "refreshed method" }));
+    expect(persisted.find((item) => item.normalizedKey?.startsWith("atlas#legacy:"))).toEqual(expect.objectContaining({ methods: "old method" }));
+  });
   it("deduplicates the same draft across concurrent retries", async () => {
     await initDatabase();
     const materialId = `retry-${crypto.randomUUID()}`;

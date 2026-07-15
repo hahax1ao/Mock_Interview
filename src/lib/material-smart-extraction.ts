@@ -18,9 +18,11 @@ const headingOnlyValues = [
   "项目经验",
 ] as const;
 const detailFields = ["background", "responsibilities", "methods", "results", "awardRole"] as const;
-const contactLabelPattern = /(?:\u59d3\u540d|\u8054\u7cfb\u65b9\u5f0f|\u8054\u7cfb\u7535\u8bdd|\u624b\u673a|\u7535\u8bdd|\u90ae\u7bb1|\u7535\u5b50\u90ae\u4ef6|\u5730\u5740|\u4f4f\u5740|\u8054\u7cfb\u5730\u5740|\u5fae\u4fe1|QQ|\u793e\u4ea4\u8d26\u53f7)\s*[\uFF1A:]/iu;
-const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu;
-const phonePattern = /(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)/u;
+const contactLabel = String.raw`(?:姓名|联系方式|联系电话|备用电话|手机|电话|邮箱|电子邮件|地址|住址|联系地址|微信|QQ|社交账号)`;
+const contactLabelPattern = new RegExp(`${contactLabel}\\s*(?:[：:]\\s*|\\s+)(?=\\S)`, "iu");
+const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu;
+const phonePattern = /(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)/gu;
+const metricContextPattern = /(?:结果|指标|累计|吞吐|速率|数量|处理|符号|样本|字节|周期|频率|误码|精度|参数)/u;
 const experienceAnchorPattern = /\u9879\u76ee|\u79d1\u7814|\u8bfe\u9898|\u7ade\u8d5b|\u6bd4\u8d5b|\u6280\u80fd|\u8363\u8a89|\u804c\u8d23|\u8d1f\u8d23|\u65b9\u6cd5|\u7b97\u6cd5|\u5b9e\u73b0|\u7ed3\u679c|\u6307\u6807|\u83b7\u5956|\u901a\u4fe1|\u7535\u8def|\u5d4c\u5165\u5f0f|FPGA|LoRa/iu;
 
 const smartFactSchema = z.object({
@@ -77,14 +79,24 @@ function renderPages(pages: ParsedPage[]) {
   return pages.map((page) => `[第 ${page.page} 页]\n${page.text}`).join("\n\n");
 }
 
-const containsContactData = (value: string) =>
-  contactLabelPattern.test(value) || emailPattern.test(value) || phonePattern.test(value);
+function sanitizeContactText(value: string, labelledReplacement = "") {
+  return value.split(/\r?\n/u).map((originalLine) => {
+    let line = originalLine;
+    const label = contactLabelPattern.exec(line);
+    if (label?.index === 0) {
+      line = labelledReplacement;
+    } else if (label && !/(?:电话|手机|邮箱|电子邮件|联系方式)/u.test(label[0])) {
+      line = line.slice(0, label.index).replace(/[\s,，;；|/]+$/u, "");
+    }
+    line = line.replace(emailPattern, "[email removed]");
+    const labelledPhone = Boolean(label && /(?:电话|手机|联系方式)/u.test(label[0]));
+    if (labelledPhone || !metricContextPattern.test(line)) line = line.replace(phonePattern, "[phone removed]");
+    return line;
+  }).join("\n").trim();
+}
 
 function redactContactLine(line: string) {
-  if (contactLabelPattern.test(line)) return "[contact removed]";
-  return line
-    .replace(emailPattern, "[email removed]")
-    .replace(phonePattern, "[phone removed]");
+  return sanitizeContactText(line, "[contact removed]");
 }
 
 function candidatePages(pages: ParsedPage[]): ParsedPage[] {
@@ -98,12 +110,32 @@ function candidatePages(pages: ParsedPage[]): ParsedPage[] {
       : lines.filter((_, index) =>
           anchors.some((anchor) => Math.abs(anchor - index) <= 8),
         );
-    return { ...page, text: selected.map(redactContactLine).join("\n") };
+    let text = selected.map(redactContactLine).join("\n");
+    if (anchors.length === 0 && text.length > 6_000) {
+      text = `${text.slice(0, 3_000)}\n[bounded fallback omitted]\n${text.slice(-3_000)}`;
+    }
+    return { ...page, text };
   });
 }
 
 const MAX_CHUNK_PAGES = 10;
-const MAX_CHUNK_CHARACTERS = 12_000;
+const MAX_CHUNK_CHARACTERS = 10_500;
+const CHUNK_OVERLAP_CHARACTERS = 200;
+
+function splitOversizedPages(pages: ParsedPage[]): ParsedPage[] {
+  return pages.flatMap((page) => {
+    if (page.text.length <= MAX_CHUNK_CHARACTERS) return [page];
+    const segments: ParsedPage[] = [];
+    let start = 0;
+    while (start < page.text.length) {
+      const end = Math.min(start + MAX_CHUNK_CHARACTERS, page.text.length);
+      segments.push({ ...page, text: page.text.slice(start, end) });
+      if (end === page.text.length) break;
+      start = end - CHUNK_OVERLAP_CHARACTERS;
+    }
+    return segments;
+  });
+}
 
 function chunkCandidatePages(pages: ParsedPage[]): ParsedPage[][] {
   const chunks: ParsedPage[][] = [];
@@ -131,10 +163,15 @@ function filterSmartFacts(
   source: string,
 ): EvidenceFactInput[] {
   return facts
+    .map((fact) => ({
+      ...fact,
+      value: sanitizeContactText(fact.value),
+      evidence: sanitizeContactText(fact.evidence),
+    }))
     .filter((fact) =>
       !isHeadingOnly(fact)
-      && !containsContactData(fact.value)
-      && !containsContactData(fact.evidence)
+      && fact.value.length > 0
+      && fact.evidence.length > 0
       && !isSolelyLocalProfileData(fact.value)
       && !isSolelyLocalProfileData(fact.evidence)
       && validateSmartEvidence(fact, pages),
@@ -152,23 +189,17 @@ function retainEvidenceBackedFields(
   pages: ParsedPage[],
 ) {
   const page = pages.find((candidate) => candidate.page === experience.page);
-  if (
-    !page
-    || containsContactData(experience.title)
-    || containsContactData(experience.evidence.title)
-    || !containsEvidence(page.text, experience.evidence.title)
-  ) return undefined;
-  const evidence = { title: experience.evidence.title } as z.infer<typeof ExperienceEvidenceSchema>;
-  const sanitized = { ...experience, evidence };
+  const title = sanitizeContactText(experience.title);
+  const titleEvidence = sanitizeContactText(experience.evidence.title);
+  if (!page || !title || !titleEvidence || !containsEvidence(page.text, titleEvidence)) return undefined;
+  const evidence = { title: titleEvidence } as z.infer<typeof ExperienceEvidenceSchema>;
+  const sanitized = { ...experience, title, evidence };
   for (const field of detailFields) {
-    const fieldEvidence = experience.evidence[field];
-    if (
-      experience[field].trim()
-      && typeof fieldEvidence === "string"
-      && !containsContactData(experience[field])
-      && !containsContactData(fieldEvidence)
-      && containsEvidence(page.text, fieldEvidence)
-    ) {
+    const fieldValue = sanitizeContactText(experience[field]);
+    const rawEvidence = experience.evidence[field];
+    const fieldEvidence = typeof rawEvidence === "string" ? sanitizeContactText(rawEvidence) : "";
+    if (fieldValue && fieldEvidence && containsEvidence(page.text, fieldEvidence)) {
+      sanitized[field] = fieldValue;
       evidence[field] = fieldEvidence;
     } else {
       sanitized[field] = "";
@@ -203,9 +234,13 @@ export async function extractSmartMaterialProfile(
   pages: ParsedPage[],
   source: string,
   invoke: SmartExtractionInvoke = qwenJson,
-): Promise<{ facts: EvidenceFactInput[]; experiences: ExtractedExperience[] }> {
+): Promise<{
+  facts: EvidenceFactInput[];
+  experiences: ExtractedExperience[];
+  chunks: { total: number; succeeded: number; failed: number };
+}> {
   const safeCandidatePages = candidatePages(pages);
-  const chunks = chunkCandidatePages(safeCandidatePages);
+  const chunks = chunkCandidatePages(splitOversizedPages(safeCandidatePages));
   const parsedResults: SmartExtractionResult[] = [];
   let firstError: unknown;
   for (const chunk of chunks) {
@@ -241,6 +276,11 @@ export async function extractSmartMaterialProfile(
   return {
     facts: filterSmartFacts(parsedResults.flatMap((parsed) => parsed.facts), pages, source),
     experiences: filterExperiences(parsedResults.flatMap((parsed) => parsed.experiences), pages, source),
+    chunks: {
+      total: chunks.length,
+      succeeded: parsedResults.length,
+      failed: chunks.length - parsedResults.length,
+    },
   };
 }
 

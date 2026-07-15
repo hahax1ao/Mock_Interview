@@ -66,6 +66,7 @@ export interface IngestionDependencies {
   extractSmartProfile(pages: ParsedPage[], source: string): Promise<{
     facts: EvidenceFactInput[];
     experiences: ExtractedExperience[];
+    chunks?: { total: number; succeeded: number; failed: number };
   }>;
   persistCreated(input: PersistCreatedInput): Promise<void>;
   createId(): string;
@@ -136,6 +137,7 @@ export async function ingestMaterial(
         const smartProfile = await dependencies.extractSmartProfile(pages, input.name);
         smartFacts = smartProfile.facts;
         extractedExperiences = smartProfile.experiences;
+        if ((smartProfile.chunks?.failed ?? 0) > 0) parseStatus = "basic_only";
       } catch {
         parseStatus = "basic_only";
       }
@@ -212,12 +214,12 @@ interface RetryMaterial {
   parseStatus: string | null;
   chunks: Array<{ page: number; start: number; text: string }>;
   facts: EvidenceFactInput[];
-  experiences: StoredExperience[];
+  experiences: Array<StoredExperience & { normalizedKey?: string | null }>;
 }
 
 export interface PersistRetryInput {
   materialId: string;
-  parseStatus: "complete";
+  parseStatus: ParseStatus;
   facts: StoredFact[];
   experienceUpdates: StoredExperience[];
   experienceInserts: StoredExperience[];
@@ -228,6 +230,7 @@ export interface RetrySmartExtractionDependencies {
   extractSmartProfile(pages: ParsedPage[], source: string): Promise<{
     facts: EvidenceFactInput[];
     experiences: ExtractedExperience[];
+    chunks?: { total: number; succeeded: number; failed: number };
   }>;
   persistRetry(input: PersistRetryInput): Promise<void>;
   createId(): string;
@@ -249,11 +252,23 @@ export function reconcileExperienceDrafts(
   const confirmedKeys = new Set(existing
     .filter((experience) => experience.status === "confirmed")
     .map(experienceKey));
-  const draftIndexByKey = new Map<string, number>();
+  const draftCandidates = new Map<string, { index: number; canonical: boolean }>();
   existing.forEach((experience, index) => {
+    if (experience.status !== "draft") return;
     const key = experienceKey(experience);
-    if (experience.status === "draft" && !draftIndexByKey.has(key)) draftIndexByKey.set(key, index);
+    const normalizedTitle = normalizeExperienceTitle(experience.title);
+    const normalizedKey = "normalizedKey" in experience ? experience.normalizedKey : undefined;
+    if (typeof normalizedKey === "string" && normalizedKey.includes("#legacy:")) return;
+    const canonical = normalizedKey === normalizedTitle;
+    if (normalizedKey != null && !canonical) return;
+    const current = draftCandidates.get(key);
+    if (!current || (canonical && !current.canonical)) {
+      draftCandidates.set(key, { index, canonical });
+    }
   });
+  const draftIndexByKey = new Map(
+    [...draftCandidates].map(([key, candidate]) => [key, candidate.index]),
+  );
 
   const reconciled = [...existing];
   const handled = new Set<string>();
@@ -330,7 +345,7 @@ export async function retrySmartExtraction(
   const experienceInserts = reconciled.filter((experience) => !existingById.has(experience.id));
   await dependencies.persistRetry({
     materialId,
-    parseStatus: "complete",
+    parseStatus: (smartProfile.chunks?.failed ?? 0) > 0 ? "basic_only" : "complete",
     facts: newFacts,
     experienceUpdates,
     experienceInserts,

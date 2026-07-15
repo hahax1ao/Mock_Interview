@@ -24,7 +24,7 @@ function dependencies(overrides: Partial<PatchExperienceRouteDependencies> = {})
   return {
     initDatabase: vi.fn(async () => undefined),
     now: () => 200,
-    updateExperience: vi.fn(async (_id, editable, status, updatedAt) => ({
+    updateExperience: vi.fn(async (_id, editable, _normalizedKey, status, updatedAt) => ({
       ...original,
       ...editable,
       status,
@@ -77,9 +77,19 @@ describe("PATCH experience route", () => {
         createdAt: original.createdAt,
       }),
     });
-    expect(deps.updateExperience).toHaveBeenCalledWith(original.id, editable, "draft", 200);
+    expect(deps.updateExperience).toHaveBeenCalledWith(original.id, editable, "用户修正标题", "draft", 200);
   });
 
+  it("returns 409 when a title edit conflicts with another draft normalized key", async () => {
+    const handler = createPatchExperienceHandler(dependencies({
+      updateExperience: vi.fn(async () => { throw new Error("SQLITE_CONSTRAINT_UNIQUE: profile_experiences_draft_key_unique"); }),
+    }));
+
+    const response = await call(handler, editable);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Experience title conflicts with another draft" });
+  });
   it("returns 404 when the card does not exist", async () => {
     const handler = createPatchExperienceHandler(dependencies({
       updateExperience: vi.fn(async () => undefined),

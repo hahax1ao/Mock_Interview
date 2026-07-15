@@ -92,23 +92,36 @@ describe("smart material extraction", () => {
     });
     expect(result.experiences[1].awardRole).toBe("队长");
     expect(invoke).toHaveBeenCalledOnce();
+    expect(result.chunks).toEqual({ total: 1, succeeded: 1, failed: 0 });
   });
 
   it("removes contact data before invocation and from extracted experience fields", async () => {
     const privatePages = [{ page: 1, text: [
       "联系方式：13800138000",
-      "邮箱：candidate@example.com",
+      "姓名 张三",
+      "微信 wx_private QQ 12345678",
+      "邮箱 candidate@example.com、backup@example.cn",
+      "备用电话 13900139000 / 13700137000",
       "地址：某省某市某街道 8 号",
       "科研经历",
       "匿名通信课题",
       "负责搭建测试链路并验证算法",
       "结果：吞吐率提升 20%",
+      "结果：累计处理 13800138000 个符号",
     ].join("\n") }];
     const invoke = vi.fn<SmartExtractionInvoke>(async ({ user }) => {
-      expect(user).not.toContain("13800138000");
       expect(user).not.toContain("candidate@example.com");
+      expect(user).not.toContain("backup@example.cn");
+      expect(user).not.toContain("13900139000");
+      expect(user).not.toContain("13700137000");
+      expect(user).not.toContain("张三");
+      expect(user).not.toContain("wx_private");
       expect(user).not.toContain("某省某市某街道");
-      return { facts: [], experiences: [{
+      expect(user).toContain("累计处理 13800138000 个符号");
+      return { facts: [{
+        field: "科研经历", value: "累计处理 13800138000 个符号；邮箱 candidate@example.com",
+        evidence: "累计处理 13800138000 个符号", page: 1, confidence: 0.8,
+      }], experiences: [{
         type: "research", title: "匿名通信课题", background: "",
         responsibilities: "负责搭建测试链路并验证算法",
         methods: "联系 13800138000 获取数据", results: "吞吐率提升 20%", awardRole: "", page: 1,
@@ -133,6 +146,10 @@ describe("smart material extraction", () => {
       methods: "",
       results: "吞吐率提升 20%",
       evidence: expect.not.objectContaining({ methods: expect.anything() }),
+    })]);
+    expect(result.facts).toEqual([expect.objectContaining({
+      value: "累计处理 13800138000 个符号；邮箱 [email removed]",
+      evidence: "累计处理 13800138000 个符号",
     })]);
   });
   it("deduplicates cards by normalized type and title", async () => {
@@ -419,6 +436,32 @@ describe("smart material extraction", () => {
     expect(result.experiences.at(-1)?.title).toBe("Project 36");
   });
 
+  it("splits one huge page into bounded invocations and merges recovered experiences", async () => {
+    const hugePage = [{
+      page: 7,
+      text: `Project Alpha Responsible for radio tests ${"x".repeat(50_000)} Project Omega Responsible for FPGA tests`,
+    }];
+    const invoke = vi.fn<SmartExtractionInvoke>(async ({ user }) => {
+      expect(user.length).toBeLessThanOrEqual(12_000);
+      const experiences = [];
+      if (user.includes("Project Alpha")) experiences.push({
+        type: "project" as const, title: "Project Alpha", background: "",
+        responsibilities: "Responsible for radio tests", methods: "", results: "", awardRole: "",
+        page: 7, evidence: { title: "Project Alpha", responsibilities: "Responsible for radio tests" }, confidence: 0.8,
+      });
+      if (user.includes("Project Omega")) experiences.push({
+        type: "project" as const, title: "Project Omega", background: "",
+        responsibilities: "Responsible for FPGA tests", methods: "", results: "", awardRole: "",
+        page: 7, evidence: { title: "Project Omega", responsibilities: "Responsible for FPGA tests" }, confidence: 0.8,
+      });
+      return { facts: [], experiences };
+    });
+
+    const result = await extractSmartMaterialProfile(hugePage, "huge.pdf", invoke);
+
+    expect(invoke.mock.calls.length).toBeGreaterThan(1);
+    expect(result.experiences.map((item) => item.title)).toEqual(["Project Alpha", "Project Omega"]);
+  });
   it("keeps successful experience chunks when one chunk fails", async () => {
     const manyPages = Array.from({ length: 24 }, (_, index) => ({
       page: index + 1,
@@ -451,5 +494,10 @@ describe("smart material extraction", () => {
     expect(invoke.mock.calls.length).toBeGreaterThan(2);
     expect(result.experiences.length).toBeGreaterThan(0);
     expect(result.experiences.length).toBeLessThan(24);
+    expect(result.chunks).toEqual({
+      total: invoke.mock.calls.length,
+      succeeded: invoke.mock.calls.length - 1,
+      failed: 1,
+    });
   });
 });

@@ -64,6 +64,47 @@ describe("POST text interview research questions", () => {
     expect(request.messages[0].content).toContain("FIRST_RESEARCH_PROJECT_QUESTION");
   });
 
+  it("serializes concurrent first research posts so only one receives the initial instruction", async () => {
+    const id = await createInterview();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    createCompletion.mockImplementation(async () => {
+      await gate;
+      return { choices: [{ message: { content: "next question" } }] };
+    });
+
+    const first = postResearch(id);
+    const second = postResearch(id);
+    await vi.waitFor(() => expect(createCompletion).toHaveBeenCalled());
+    release();
+    const responses = await Promise.all([first, second]);
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const initialInstructions = createCompletion.mock.calls.filter((call) =>
+      call[0].messages[0].content.includes("FIRST_RESEARCH_PROJECT_QUESTION"),
+    );
+    expect(initialInstructions).toHaveLength(1);
+    const claims = await db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, id));
+    expect(claims).toContainEqual(expect.objectContaining({
+      type: "research_initial_claim",
+      payload: { status: "completed", leaseUntil: null },
+    }));
+  });
+  it("releases a failed initial claim so retry receives the initial instruction", async () => {
+    const id = await createInterview();
+    createCompletion
+      .mockRejectedValueOnce(new Error("model unavailable"))
+      .mockResolvedValueOnce({ choices: [{ message: { content: "retry question" } }] });
+
+    const failed = await postResearch(id);
+    const afterFailure = await db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, id));
+    const retried = await postResearch(id);
+
+    expect(failed.status).toBe(400);
+    expect(afterFailure).not.toContainEqual(expect.objectContaining({ type: "research_initial_claim" }));
+    expect(retried.status).toBe(200);
+    expect(createCompletion.mock.calls[1][0].messages[0].content).toContain("FIRST_RESEARCH_PROJECT_QUESTION");
+  });
   it("does not repeat the fixed project instruction on a research follow-up", async () => {
     const id = await createInterview();
     await db.insert(interviewEvents).values({

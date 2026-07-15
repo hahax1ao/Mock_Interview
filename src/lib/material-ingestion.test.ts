@@ -243,6 +243,23 @@ describe("material ingestion", () => {
     }));
   });
 
+  it("keeps partial smart cards but persists a retryable non-complete status", async () => {
+    const deps = ingestionDependencies({
+      extractSmartProfile: vi.fn(async () => ({
+        facts: [fact("项目经历", "Atlas", "qwen")],
+        experiences: [experience("Atlas")],
+        chunks: { total: 3, succeeded: 2, failed: 1 },
+      })),
+    });
+
+    const result = await ingestMaterial(input, deps);
+
+    expect(result).toMatchObject({ kind: "created", parseStatus: "basic_only", smartFacts: 1, experiences: 1 });
+    expect(deps.persistCreated).toHaveBeenCalledWith(expect.objectContaining({
+      material: expect.objectContaining({ parseStatus: "basic_only" }),
+      experiences: [expect.objectContaining({ title: "Atlas" })],
+    }));
+  });
   it("merges local and smart facts and marks successful extraction complete", async () => {
     const deps = ingestionDependencies();
 
@@ -376,6 +393,23 @@ describe("smart extraction retry", () => {
     expect([...persisted.experienceUpdates, ...persisted.experienceInserts]).not.toContainEqual(
       expect.objectContaining({ id: "confirmed-beacon" }),
     );
+  });
+  it("persists partial retry results while keeping the material retryable", async () => {
+    const deps = retryDependencies({
+      extractSmartProfile: vi.fn(async () => ({
+        facts: [fact("项目经历", "Atlas", "qwen")],
+        experiences: [experience("Atlas")],
+        chunks: { total: 4, succeeded: 3, failed: 1 },
+      })),
+    });
+
+    const result = await retrySmartExtraction("material-1", deps);
+
+    expect(result).toEqual({ smartFacts: 1, experiences: 1 });
+    expect(deps.persistRetry).toHaveBeenCalledWith(expect.objectContaining({
+      parseStatus: "basic_only",
+      experienceInserts: [expect.objectContaining({ title: "Atlas" })],
+    }));
   });
   it("does not mutate facts or status when the model call fails", async () => {
     const persistRetry = vi.fn(async () => undefined);
