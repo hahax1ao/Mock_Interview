@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  extractSmartFacts,
   extractSmartMaterialProfile,
   validateSmartEvidence,
   type SmartExtractionInvoke,
@@ -12,6 +11,17 @@ const pages = [
 ];
 
 
+const extractFacts = async (
+  inputPages: typeof pages,
+  source: string,
+  invoke: SmartExtractionInvoke,
+) => (await extractSmartMaterialProfile(inputPages, source, async (options) => {
+  const result = await invoke(options);
+  if (result && typeof result === "object" && "facts" in result && !("experiences" in result)) {
+    return { ...result, experiences: [] };
+  }
+  return result;
+})).facts;
 const experiencePages = [{ page: 1, text: [
   "高吞吐量通信协议研究与全链路验证",
   "项目目标：解决数据密集型 IoT 速率受限问题。",
@@ -140,15 +150,16 @@ describe("smart material extraction", () => {
     expect(result.experiences.map((item) => item.title)).toEqual([embeddedCard.title]);
   });
 
-  it("rejects a title-only card", async () => {
+  it("removes a title-only card while retaining a valid sibling", async () => {
     const titleOnly = {
       type: "project", title: researchCard.title, background: "", responsibilities: "",
       methods: "", results: "", awardRole: "", page: 1,
       evidence: { title: researchCard.title }, confidence: 0.8,
     };
-    await expect(extractSmartMaterialProfile(experiencePages, "resume.pdf", async () => ({
-      facts: [], experiences: [titleOnly],
-    }))).rejects.toThrow();
+    const result = await extractSmartMaterialProfile(experiencePages, "resume.pdf", async () => ({
+      facts: [], experiences: [titleOnly, embeddedCard],
+    }));
+    expect(result.experiences.map((item) => item.title)).toEqual([embeddedCard.title]);
   });
 
 
@@ -161,7 +172,7 @@ describe("smart material extraction", () => {
       confidence: 0.98,
     }] }));
 
-    const facts = await extractSmartFacts(pages, "jianli.pdf", invoke);
+    const facts = await extractFacts(pages, "jianli.pdf", invoke);
 
     expect(facts).toEqual([expect.objectContaining({
       field: "竞赛经历",
@@ -205,7 +216,7 @@ describe("smart material extraction", () => {
       confidence: 0.8,
     }] });
 
-    await expect(extractSmartFacts(pages, "jianli.pdf", invoke)).resolves.toEqual([]);
+    await expect(extractFacts(pages, "jianli.pdf", invoke)).resolves.toEqual([]);
   });
 
   it.each([
@@ -228,7 +239,7 @@ describe("smart material extraction", () => {
       confidence: 0.8,
     }] });
 
-    await expect(extractSmartFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toEqual([]);
+    await expect(extractFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toEqual([]);
   });
 
   it("keeps a substantive sentence that starts with a heading alias", async () => {
@@ -241,7 +252,7 @@ describe("smart material extraction", () => {
       confidence: 0.8,
     }] });
 
-    await expect(extractSmartFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
+    await expect(extractFacts([{ page: 3, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
   });
 
   it("rejects locally-owned CET scores even when the model assigns them to 技能", async () => {
@@ -254,7 +265,7 @@ describe("smart material extraction", () => {
       confidence: 0.88,
     }] });
 
-    await expect(extractSmartFacts([{ page: 1, text: `技能=${value}` }], "jianli.pdf", invoke))
+    await expect(extractFacts([{ page: 1, text: `技能=${value}` }], "jianli.pdf", invoke))
       .resolves.toEqual([]);
   });
 
@@ -272,7 +283,7 @@ describe("smart material extraction", () => {
       confidence: 0.8,
     }] });
 
-    await expect(extractSmartFacts([{ page: 1, text: value }], "jianli.pdf", invoke)).resolves.toEqual([]);
+    await expect(extractFacts([{ page: 1, text: value }], "jianli.pdf", invoke)).resolves.toEqual([]);
   });
 
   it("keeps a substantive project sentence that also mentions a locally-owned datum", async () => {
@@ -285,7 +296,7 @@ describe("smart material extraction", () => {
       confidence: 0.86,
     }] });
 
-    await expect(extractSmartFacts([{ page: 1, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
+    await expect(extractFacts([{ page: 1, text: value }], "jianli.pdf", invoke)).resolves.toHaveLength(1);
   });
   it("rejects malformed or disallowed model fields", async () => {
     const invoke = async () => ({ facts: [{
@@ -296,13 +307,13 @@ describe("smart material extraction", () => {
       confidence: 0.8,
     }] });
 
-    await expect(extractSmartFacts(pages, "jianli.pdf", invoke)).rejects.toThrow();
+    await expect(extractFacts(pages, "jianli.pdf", invoke)).rejects.toThrow();
   });
 
   it("instructs the model to classify semantic facts without requesting contacts", async () => {
     const invoke = vi.fn<SmartExtractionInvoke>(async () => ({ facts: [] }));
 
-    await extractSmartFacts(pages, "jianli.pdf", invoke);
+    await extractFacts(pages, "jianli.pdf", invoke);
 
     const options = invoke.mock.calls[0][0];
     expect(options.user).toContain(pages[0].text);
@@ -319,7 +330,7 @@ describe("smart material extraction", () => {
   it("requires the exact combined root contract and a material-specific timeout", async () => {
     const invoke = vi.fn<SmartExtractionInvoke>(async () => ({ facts: [] }));
 
-    await extractSmartFacts(pages, "jianli.pdf", invoke);
+    await extractFacts(pages, "jianli.pdf", invoke);
 
     const options = invoke.mock.calls[0][0] as Parameters<SmartExtractionInvoke>[0] & { timeoutMs?: number };
     expect(`${options.system}\n${options.user}`).toContain(

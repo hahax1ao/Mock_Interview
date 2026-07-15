@@ -10,7 +10,7 @@ import { chunkMaterial } from "@/domain/materials";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
 import { ingestMaterial } from "@/lib/material-ingestion";
 import { parseMaterial } from "@/lib/material-parser";
-import { extractSmartFacts } from "@/lib/material-smart-extraction";
+import { extractSmartMaterialProfile } from "@/lib/material-smart-extraction";
 import { extractLocalFacts } from "@/lib/profile-extraction";
 import {
   persistReservedMaterial,
@@ -93,7 +93,7 @@ export async function POST(request: Request) {
       parseMaterial,
       chunkMaterial,
       extractLocalFacts,
-      extractSmartFacts,
+      extractSmartMaterialProfile,
       persistCreated: persistReservedMaterial,
       createId: randomUUID,
       now: Date.now,

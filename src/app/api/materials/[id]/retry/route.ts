@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { db, initDatabase } from "@/db/client";
 import { materialChunks, materials, profileFacts } from "@/db/schema";
 import { retrySmartExtraction } from "@/lib/material-ingestion";
-import { extractSmartFacts } from "@/lib/material-smart-extraction";
+import { extractSmartMaterialProfile } from "@/lib/material-smart-extraction";
 
 export const runtime = "nodejs";
 
@@ -40,7 +40,7 @@ export async function POST(
           })),
         };
       },
-      extractSmartFacts,
+      extractSmartMaterialProfile,
       persistRetry: async ({ materialId: id, parseStatus, facts }) => {
         await db.transaction(async (tx) => {
           if (facts.length) await tx.insert(profileFacts).values(facts);

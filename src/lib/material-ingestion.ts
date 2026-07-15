@@ -57,7 +57,7 @@ export interface IngestionDependencies {
   parseMaterial(name: string, mimeType: string, buffer: Buffer): Promise<ParsedPage[]>;
   chunkMaterial(input: { materialId: string; source: string; pages: ParsedPage[] }): MaterialChunk[];
   extractLocalFacts(pages: ParsedPage[], source: string): EvidenceFactInput[];
-  extractSmartFacts(pages: ParsedPage[], source: string): Promise<EvidenceFactInput[]>;
+  extractSmartMaterialProfile(pages: ParsedPage[], source: string): Promise<{ facts: EvidenceFactInput[] }>;
   persistCreated(input: PersistCreatedInput): Promise<void>;
   createId(): string;
   now(): number;
@@ -122,7 +122,7 @@ export async function ingestMaterial(
     if (input.category === "personal") {
       localFacts = dependencies.extractLocalFacts(pages, input.name);
       try {
-        smartFacts = await dependencies.extractSmartFacts(pages, input.name);
+        smartFacts = (await dependencies.extractSmartMaterialProfile(pages, input.name)).facts;
       } catch {
         parseStatus = "basic_only";
       }
@@ -199,7 +199,7 @@ export interface PersistRetryInput {
 
 export interface RetrySmartExtractionDependencies {
   loadMaterial(materialId: string): Promise<RetryMaterial | undefined>;
-  extractSmartFacts(pages: ParsedPage[], source: string): Promise<EvidenceFactInput[]>;
+  extractSmartMaterialProfile(pages: ParsedPage[], source: string): Promise<{ facts: EvidenceFactInput[] }>;
   persistRetry(input: PersistRetryInput): Promise<void>;
   createId(): string;
 }
@@ -224,7 +224,10 @@ export async function retrySmartExtraction(
   if (!material) throw new Error("材料不存在");
   if (material.category !== "personal") throw new Error("仅个人材料支持智能提取");
 
-  const smartFacts = await dependencies.extractSmartFacts(pagesFromChunks(material.chunks), material.name);
+  const smartFacts = (await dependencies.extractSmartMaterialProfile(
+    pagesFromChunks(material.chunks),
+    material.name,
+  )).facts;
   const existing = mergeFacts(material.facts);
   const newFacts = mergeFacts(existing, smartFacts).slice(existing.length).map((fact) => ({
     ...fact,

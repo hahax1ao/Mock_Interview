@@ -31,10 +31,7 @@ const extractedExperienceSchema = ExperienceEditableObjectSchema.extend({
   page: z.number().int().positive(),
   evidence: ExperienceEvidenceSchema,
   confidence: z.number().min(0).max(1),
-}).strict().refine(
-  (value) => detailFields.some((field) => value[field].length > 0),
-  { message: "详细经历至少需要一项描述" },
-);
+}).strict();
 
 const smartExtractionSchema = z.object({
   facts: z.array(smartFactSchema).max(100),
@@ -163,17 +160,8 @@ export async function extractSmartMaterialProfile(
   };
 }
 
-export async function extractSmartFacts(
-  pages: ParsedPage[],
-  source: string,
-  invoke: SmartExtractionInvoke = qwenJson,
-): Promise<EvidenceFactInput[]> {
-  const compatibleInvoke: SmartExtractionInvoke = async (options) => {
-    const result = await invoke(options);
-    if (result && typeof result === "object" && "facts" in result && !("experiences" in result)) {
-      return { ...result, experiences: [] };
-    }
-    return result;
-  };
-  return (await extractSmartMaterialProfile(pages, source, compatibleInvoke)).facts;
+export function extractSmartFacts(
+  profile: { facts: EvidenceFactInput[] },
+): EvidenceFactInput[] {
+  return profile.facts;
 }

@@ -39,7 +39,7 @@ function ingestionDependencies(
       position: { start: 0, end: item.text.length },
     }))),
     extractLocalFacts: vi.fn(() => [fact("GPA", "3.8")]),
-    extractSmartFacts: vi.fn(async () => [fact("项目经历", "Project Atlas", "qwen")]),
+    extractSmartMaterialProfile: vi.fn(async () => ({ facts: [fact("项目经历", "Project Atlas", "qwen")] })),
     persistCreated: vi.fn(async () => undefined),
     createId: () => "material-new",
     now: () => 200,
@@ -57,7 +57,7 @@ const input = {
 describe("material ingestion", () => {
   it("returns an exact duplicate before parsing, writing, or calling Qwen", async () => {
     const parseMaterial = vi.fn(async () => [page]);
-    const extractSmartFacts = vi.fn(async () => []);
+    const extractSmartMaterialProfile = vi.fn(async () => ({ facts: [] }));
     const writeUpload = vi.fn(async () => "unexpected");
     const deps = ingestionDependencies({
       listMaterials: vi.fn(async () => [{
@@ -68,7 +68,7 @@ describe("material ingestion", () => {
         createdAt: 100,
       }]),
       parseMaterial,
-      extractSmartFacts,
+      extractSmartMaterialProfile,
       writeUpload,
     });
 
@@ -79,7 +79,7 @@ describe("material ingestion", () => {
       material: { id: "material-old", name: "old-name.txt", createdAt: 100 },
     });
     expect(parseMaterial).not.toHaveBeenCalled();
-    expect(extractSmartFacts).not.toHaveBeenCalled();
+    expect(extractSmartMaterialProfile).not.toHaveBeenCalled();
     expect(writeUpload).not.toHaveBeenCalled();
   });
 
@@ -104,7 +104,7 @@ describe("material ingestion", () => {
     expect(results.map((result) => result.kind)).toContain("created");
     expect(results.map((result) => result.kind)).toSatisfy((kinds: string[]) => kinds.includes("in_progress") || kinds.includes("duplicate"));
     expect(deps.parseMaterial).toHaveBeenCalledOnce();
-    expect(deps.extractSmartFacts).toHaveBeenCalledOnce();
+    expect(deps.extractSmartMaterialProfile).toHaveBeenCalledOnce();
     expect(deps.persistCreated).toHaveBeenCalledOnce();
   });
 
@@ -205,13 +205,13 @@ describe("material ingestion", () => {
     const result = await ingestMaterial({ ...input, category: "reference" }, deps);
 
     expect(deps.extractLocalFacts).not.toHaveBeenCalled();
-    expect(deps.extractSmartFacts).not.toHaveBeenCalled();
+    expect(deps.extractSmartMaterialProfile).not.toHaveBeenCalled();
     expect(result).toMatchObject({ kind: "created", parseStatus: "complete", localFacts: 0, smartFacts: 0 });
   });
 
   it("keeps the local upload as basic_only when Qwen rejects", async () => {
     const deps = ingestionDependencies({
-      extractSmartFacts: vi.fn(async () => { throw new Error("model unavailable"); }),
+      extractSmartMaterialProfile: vi.fn(async () => { throw new Error("model unavailable"); }),
     });
 
     const result = await ingestMaterial(input, deps);
@@ -252,10 +252,10 @@ function retryDependencies(
       ],
       facts: [fact("技能", "TypeScript")],
     })),
-    extractSmartFacts: vi.fn(async () => [
+    extractSmartMaterialProfile: vi.fn(async () => ({ facts: [
       fact(" 技能 ", "typescript", "qwen"),
       fact("项目经历", "Atlas", "qwen"),
-    ]),
+    ] })),
     persistRetry: vi.fn(async () => undefined),
     createId: () => "fact-new",
     ...overrides,
@@ -268,7 +268,7 @@ describe("smart extraction retry", () => {
 
     const result = await retrySmartExtraction("material-1", deps);
 
-    expect(deps.extractSmartFacts).toHaveBeenCalledWith([
+    expect(deps.extractSmartMaterialProfile).toHaveBeenCalledWith([
       { page: 1, text: "one\n\ntwo" },
       { page: 2, text: "three" },
     ], "resume.txt");
@@ -283,7 +283,7 @@ describe("smart extraction retry", () => {
   it("does not mutate facts or status when the model call fails", async () => {
     const persistRetry = vi.fn(async () => undefined);
     const deps = retryDependencies({
-      extractSmartFacts: vi.fn(async () => { throw new Error("Qwen timeout"); }),
+      extractSmartMaterialProfile: vi.fn(async () => { throw new Error("Qwen timeout"); }),
       persistRetry,
     });
 
