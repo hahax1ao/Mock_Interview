@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db, initDatabase } from "@/db/client";
 import { materialChunks, materials, profileExperiences, profileFacts } from "@/db/schema";
@@ -59,10 +59,12 @@ export async function POST(
               page: experience.page,
               evidence: experience.evidence,
               confidence: experience.confidence,
-              status: experience.status,
-              createdAt: experience.createdAt,
               updatedAt: experience.updatedAt,
-            }).where(eq(profileExperiences.id, experience.id));
+            }).where(and(
+              eq(profileExperiences.id, experience.id),
+              eq(profileExperiences.materialId, id),
+              eq(profileExperiences.status, "draft"),
+            ));
           }
           if (experienceInserts.length) await tx.insert(profileExperiences).values(experienceInserts);
           await tx.update(materials).set({ parseStatus }).where(eq(materials.id, id));

@@ -235,7 +235,7 @@ export interface RetrySmartExtractionDependencies {
 }
 
 const normalizeExperienceTitle = (title: string) =>
-  title.normalize("NFKC").replace(/\s+/gu, "").toLocaleLowerCase();
+  title.normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
 
 const experienceKey = (experience: Pick<StoredExperience, "materialId" | "type" | "title">) =>
   `${experience.materialId}\0${experience.type}\0${normalizeExperienceTitle(experience.title)}`;
