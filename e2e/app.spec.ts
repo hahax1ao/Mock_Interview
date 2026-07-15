@@ -183,11 +183,18 @@ test("detailed experience edits, confirms, becomes read-only, and follows materi
   };
   let confirmed = false;
   let deleted = false;
+  let releaseDeleteRefresh: (() => void) | undefined;
+  const deleteRefreshGate = new Promise<void>((resolve) => { releaseDeleteRefresh = resolve; });
   let confirmBody: Record<string, unknown> | undefined;
 
   await page.route("**/api/materials", async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
-    await route.fulfill({ json: deleted ? { materials: [], facts: [], experiences: [] } : {
+    if (deleted) {
+      await deleteRefreshGate;
+      await route.fulfill({ json: { materials: [], facts: [], experiences: [] } });
+      return;
+    }
+    await route.fulfill({ json: {
       materials: [material], facts: [],
       experiences: [{ ...baseExperience, status: confirmed ? "confirmed" : "draft" }],
     } });
@@ -205,7 +212,7 @@ test("detailed experience edits, confirms, becomes read-only, and follows materi
 
   await page.goto("/");
   await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
-  await page.getByRole("button", { name: /展开经历.*Super-LoRa/ }).click();
+  await page.locator("summary").filter({ hasText: "Super-LoRa" }).click();
   await page.getByLabel("量化成果").fill("吞吐量提升 1.35 倍");
   await page.getByRole("button", { name: "确认整段经历" }).click();
 
@@ -217,6 +224,7 @@ test("detailed experience edits, confirms, becomes read-only, and follows materi
   await page.getByRole("button", { name: `删除 ${material.name}` }).click();
   await expect(page.getByText(material.name, { exact: true })).toHaveCount(0);
   await expect(page.getByText("Super-LoRa", { exact: true })).toHaveCount(0);
+  releaseDeleteRefresh?.();
 });
 test("re-extracts detailed experiences from a complete personal material", async ({ page }) => {
   const material = {
@@ -250,5 +258,56 @@ test("re-extracts detailed experiences from a complete personal material", async
   await page.getByRole("button", { name: `重新提取详细经历 ${material.name}` }).click();
 
   expect(retryMethod).toBe("POST");
-  await expect(page.getByRole("button", { name: /展开经历.*旧简历项目/ })).toBeVisible();
+  await expect(page.locator("summary").filter({ hasText: "旧简历项目" })).toBeVisible();
+});
+
+test("detailed experience save shows a notice when fetch rejects", async ({ page }) => {
+  const material = { id: "material-fail", name: "fail.pdf", category: "personal", status: "ready", parseStatus: "complete", createdAt: 1 };
+  const experience = { id: "experience-fail", materialId: material.id, type: "research", title: "失败边界项目", background: "背景", responsibilities: "职责", methods: "方法", results: "结果", awardRole: "角色", source: material.name, page: 1, evidence: { title: "失败边界项目" }, confidence: 0.8, status: "draft", createdAt: 1, updatedAt: 1 };
+  await page.route("**/api/materials", (route) => route.request().method() === "GET" ? route.fulfill({ json: { materials: [material], facts: [], experiences: [experience] } }) : route.fallback());
+  await page.route("**/api/experiences/experience-fail", (route) => route.abort("failed"));
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  await page.locator("summary").filter({ hasText: "失败边界项目" }).click();
+  await page.getByRole("button", { name: "保存修改" }).click();
+
+  await expect(page.getByRole("status")).toContainText("详细经历保存失败，请检查网络后重试");
+  await expect(page.getByLabel("量化成果")).toBeVisible();
+});
+test("detailed experience confirm handles a non-JSON error response", async ({ page }) => {
+  const material = { id: "material-confirm-fail", name: "confirm.pdf", category: "personal", status: "ready", parseStatus: "complete", createdAt: 1 };
+  const experience = { id: "experience-confirm-fail", materialId: material.id, type: "project", title: "确认失败项目", background: "背景", responsibilities: "职责", methods: "方法", results: "结果", awardRole: "角色", source: material.name, page: 1, evidence: { title: "确认失败项目" }, confidence: 0.8, status: "draft", createdAt: 1, updatedAt: 1 };
+  await page.route("**/api/materials", (route) => route.request().method() === "GET" ? route.fulfill({ json: { materials: [material], facts: [], experiences: [experience] } }) : route.fallback());
+  await page.route("**/api/experiences/experience-confirm-fail/confirm", (route) => route.fulfill({ status: 502, contentType: "text/plain", body: "bad gateway" }));
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  await page.locator("summary").filter({ hasText: "确认失败项目" }).click();
+  await page.getByRole("button", { name: "确认整段经历" }).click();
+
+  await expect(page.getByRole("status")).toContainText("详细经历确认失败，请稍后重试");
+  await expect(page.getByLabel("量化成果")).toBeVisible();
+});
+test("re-extract handles a non-JSON error response", async ({ page }) => {
+  const material = { id: "material-retry-fail", name: "retry-fail.pdf", category: "personal", status: "ready", parseStatus: "complete", createdAt: 1 };
+  await page.route("**/api/materials", (route) => route.request().method() === "GET" ? route.fulfill({ json: { materials: [material], facts: [], experiences: [] } }) : route.fallback());
+  await page.route("**/api/materials/material-retry-fail/retry", (route) => route.fulfill({ status: 503, contentType: "text/plain", body: "unavailable" }));
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  const retry = page.getByRole("button", { name: `重新提取详细经历 ${material.name}` });
+  await retry.click();
+
+  await expect(page.getByRole("status")).toContainText("详细经历重新提取失败，请稍后重试");
+  await expect(retry).toBeEnabled();
+});
+test("re-extract shows a notice when fetch rejects", async ({ page }) => {
+  const material = { id: "material-retry-network", name: "offline.pdf", category: "personal", status: "ready", parseStatus: "complete", createdAt: 1 };
+  await page.route("**/api/materials", (route) => route.request().method() === "GET" ? route.fulfill({ json: { materials: [material], facts: [], experiences: [] } }) : route.fallback());
+  await page.route("**/api/materials/material-retry-network/retry", (route) => route.abort("failed"));
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  await page.getByRole("button", { name: `重新提取详细经历 ${material.name}` }).click();
+  await expect(page.getByRole("status")).toContainText("详细经历重新提取失败，请检查网络后重试");
 });

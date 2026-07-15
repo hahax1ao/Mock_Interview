@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ExperienceEditable, ExperienceType, ProfileExperience } from "@/domain/experiences";
 
 type ExperienceCardsProps = {
@@ -13,6 +13,7 @@ type ExperienceCardsProps = {
 const typeNames: Record<ExperienceType, string> = { research: "科研", project: "项目", competition: "竞赛" };
 
 const detailedFields: Array<[keyof ExperienceEditable, string]> = [
+  ["title", "标题"],
   ["background", "背景"],
   ["responsibilities", "个人职责"],
   ["methods", "方法与过程"],
@@ -38,17 +39,41 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
   const [editingIds, setEditingIds] = useState<Set<string>>(() =>
     new Set(experiences.filter((experience) => experience.status === "draft").map((experience) => experience.id)),
   );
+  const dirtyIds = useRef(new Set<string>());
+  const experiencesRef = useRef(experiences);
+  experiencesRef.current = experiences;
 
+  useEffect(() => {
+    setDrafts((current) => Object.fromEntries(experiences.map((experience) => [
+      experience.id,
+      dirtyIds.current.has(experience.id) ? current[experience.id] ?? editableValue(experience) : editableValue(experience),
+    ])));
+    const confirmedIds = new Set(experiences.filter((experience) => experience.status === "confirmed").map((experience) => experience.id));
+    confirmedIds.forEach((id) => dirtyIds.current.delete(id));
+    setEditingIds((current) => new Set([...current].filter((id) => !confirmedIds.has(id))));
+  }, [experiences]);
   function update(id: string, field: keyof ExperienceEditable, value: string) {
+    dirtyIds.current.add(id);
     setDrafts((current) => ({
       ...current,
       [id]: { ...current[id], [field]: value },
     }));
   }
 
+  async function save(id: string, draft: ExperienceEditable) {
+    try {
+      await onSave(id, draft);
+      dirtyIds.current.delete(id);
+      const refreshed = experiencesRef.current.find((experience) => experience.id === id);
+      if (refreshed) setDrafts((current) => ({ ...current, [id]: editableValue(refreshed) }));
+    } catch {
+      // The page action owns the visible failure notice; keep the card editable.
+    }
+  }
   async function confirm(id: string, draft: ExperienceEditable) {
     try {
       await onConfirm(id, draft);
+      dirtyIds.current.delete(id);
       setEditingIds((current) => {
         const next = new Set(current);
         next.delete(id);
@@ -64,7 +89,7 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
       const editing = experience.status === "draft" || editingIds.has(experience.id);
       const missing = detailedFields.filter(([field]) => !draft[field]).map(([, label]) => label);
       return <details className="experience-card" key={experience.id}>
-        <summary role="button" aria-label={`展开经历 ${experience.title}`}><span>{experience.title}</span><small className={missing.length ? "summary-missing" : "summary-complete"}>{missing.length ? `待补 ${missing.length} 项` : experience.status === "confirmed" ? "已确认" : "字段完整"}</small></summary>
+        <summary><span>{experience.title}</span><small className={missing.length ? "summary-missing" : "summary-complete"}>{missing.length ? `待补 ${missing.length} 项` : experience.status === "confirmed" ? "已确认" : "字段完整"}</small></summary>
         <div className="experience-meta">
           <span>{experience.source} · 第 {experience.page} 页</span>
           <span>置信度 {Math.round(experience.confidence * 100)}%</span>
@@ -100,7 +125,7 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
           <label htmlFor={`experience-${experience.id}-award-role`}>奖项 / 角色</label>
           <textarea id={`experience-${experience.id}-award-role`} value={draft.awardRole} onChange={(event) => update(experience.id, "awardRole", event.target.value)} />
           <div className="experience-actions">
-            <button type="button" disabled={busyId === experience.id} onClick={() => void onSave(experience.id, draft)}>保存修改</button>
+            <button type="button" disabled={busyId === experience.id} onClick={() => void save(experience.id, draft)}>保存修改</button>
             <button type="button" disabled={busyId === experience.id} onClick={() => void confirm(experience.id, draft)}>确认整段经历</button>
           </div>
         </div>}

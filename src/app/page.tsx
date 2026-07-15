@@ -148,17 +148,28 @@ export default function Home() {
 
   async function retryMaterial(item: Material) {
     if (retryingId) return;
+    const action = item.parseStatus === "basic_only" ? "智能解析重试" : "详细经历重新提取";
     setRetryingId(item.id);
     try {
       const response = await fetch(`/api/materials/${item.id}/retry`, { method: "POST" });
-      const body = await response.json();
-      setNotice(response.ok ? `智能解析已完成：${item.name}` : body.error ?? "智能解析重试失败");
-      if (response.ok) await refresh();
+      let body: { error?: string } = {};
+      try {
+        if (response.headers.get("content-type")?.includes("application/json")) body = await response.json();
+      } catch {
+        body = {};
+      }
+      if (!response.ok) {
+        setNotice(body.error ?? `${action}失败，请稍后重试`);
+        return;
+      }
+      setNotice(`智能解析已完成：${item.name}`);
+      await refresh();
+    } catch {
+      setNotice(`${action}失败，请检查网络后重试`);
     } finally {
       setRetryingId(null);
     }
   }
-
 
   async function updateExperience(
     id: string,
@@ -167,6 +178,8 @@ export default function Home() {
     suffix = "",
   ) {
     if (experienceBusyId) return;
+    const action = method === "POST" ? "确认" : "保存";
+    let failureNoticeSet = false;
     setExperienceBusyId(id);
     try {
       const response = await fetch(`/api/experiences/${id}${suffix}`, {
@@ -174,20 +187,26 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(value),
       });
-      const body = response.headers.get("content-type")?.includes("application/json")
-        ? await response.json()
-        : {};
+      let body: { error?: string } = {};
+      try {
+        if (response.headers.get("content-type")?.includes("application/json")) body = await response.json();
+      } catch {
+        body = {};
+      }
       if (!response.ok) {
-        setNotice(body.error ?? "详细经历更新失败，请稍后重试");
+        failureNoticeSet = true;
+        setNotice(body.error ?? `详细经历${action}失败，请稍后重试`);
         throw new Error(body.error ?? "experience update failed");
       }
       setNotice(method === "POST" ? "详细经历已确认" : "详细经历已保存");
       await refresh();
+    } catch (error) {
+      if (!failureNoticeSet) setNotice(`详细经历${action}失败，请检查网络后重试`);
+      throw error;
     } finally {
       setExperienceBusyId(null);
     }
   }
-
   async function saveExperience(id: string, value: ExperienceEditable) {
     return updateExperience(id, "PATCH", value);
   }
