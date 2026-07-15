@@ -33,7 +33,7 @@
 | `awardRole` | 奖项、名次、队内角色，可为空 |
 | `source` | 原材料名称 |
 | `page` | 真实页码 |
-| `evidence` | `{background?, responsibilities?, methods?, results?, awardRole?}` 形式的逐字证据 JSON |
+| `evidence` | `{title, background?, responsibilities?, methods?, results?, awardRole?}` 形式的逐字证据 JSON |
 | `confidence` | 综合置信度 |
 | `status` | `draft` 或 `confirmed` |
 | `createdAt`、`updatedAt` | 创建与更新时间 |
