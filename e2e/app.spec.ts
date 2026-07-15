@@ -311,3 +311,68 @@ test("re-extract shows a notice when fetch rejects", async ({ page }) => {
   await page.getByRole("button", { name: `重新提取详细经历 ${material.name}` }).click();
   await expect(page.getByRole("status")).toContainText("详细经历重新提取失败，请检查网络后重试");
 });
+
+test("confirmed detailed experience drives research interview", async ({ page }) => {
+  const material = {
+    id: "material-resume", name: "resume.pdf", category: "personal", status: "ready",
+    parseStatus: "complete", createdAt: 1_767_225_600_000,
+  };
+  const experience = (id: string, type: "research" | "project" | "competition", title: string) => ({
+    id, materialId: material.id, type, title,
+    background: `${title} 背景`, responsibilities: `${title} 个人职责`,
+    methods: `${title} 技术方法`, results: `${title} 量化成果`, awardRole: `${title} 角色`,
+    source: material.name, page: 2, evidence: { title }, confidence: 0.93,
+    status: "draft", createdAt: 1_767_225_600_000, updatedAt: 1_767_225_600_000,
+  });
+  const experiences = [
+    experience("experience-lora", "research", "Super-LoRa"),
+    experience("experience-fpga", "competition", "嵌入式 FPGA 竞赛"),
+    experience("experience-circuit", "project", "电子设计竞赛 G 题"),
+  ];
+  let selectedMaterialIds: string[] = [];
+  let sessionResponse: { roleInstructions?: { research?: string } } | undefined;
+
+  await page.route("**/api/materials", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({ json: { materials: [material], facts: [], experiences } });
+  });
+  await page.route("**/api/experiences/experience-lora/confirm", async (route) => {
+    const editable = route.request().postDataJSON();
+    Object.assign(experiences[0], editable, { status: "confirmed" });
+    await route.fulfill({ json: { experience: experiences[0] } });
+  });
+  await page.route("**/api/interviews", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({ json: { interviews: [] } });
+      return;
+    }
+    selectedMaterialIds = route.request().postDataJSON().materialIds;
+    await route.fulfill({ status: 201, json: {
+      interview: { id: "7a65ab08-03a7-4ec7-9359-a2ff4670ddea", status: "ready" }, plan: [],
+    } });
+  });
+  await page.route("**/api/realtime/session", async (route) => {
+    const confirmed = experiences.find((item) => item.status === "confirmed"
+      && selectedMaterialIds.includes(item.materialId));
+    sessionResponse = {
+      roleInstructions: confirmed
+        ? { research: `科研项目模块的第一问必须点名 ${confirmed.title} 并询问候选人的个人职责。` }
+        : {},
+    };
+    await route.fulfill({ json: { websocketPath: "/realtime?token=mock", ...sessionResponse } });
+  });
+
+  await page.goto("/");
+  await page.locator("nav").getByRole("button", { name: /材料库/ }).click();
+  await expect(page.locator("summary")).toHaveCount(3);
+  await page.locator("summary").filter({ hasText: "Super-LoRa" }).click();
+  await page.getByRole("button", { name: "确认整段经历" }).click();
+  await expect(page.getByRole("button", { name: "重新编辑" })).toBeVisible();
+
+  await page.locator("nav").getByRole("button", { name: /训练台/ }).click();
+  await page.getByRole("button", { name: `引用材料 ${material.name}` }).click();
+  await page.getByRole("button", { name: /开始模拟面试/ }).click();
+
+  await expect.poll(() => sessionResponse?.roleInstructions?.research).toContain("Super-LoRa");
+  expect(selectedMaterialIds).toEqual([material.id]);
+});
