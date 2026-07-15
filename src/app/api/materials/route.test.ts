@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { materialConflictResponse, materialCreatedResponse } from "./route";
+import { describe, expect, it, vi } from "vitest";
+import { createGetMaterialsHandler, materialConflictResponse, materialCreatedResponse } from "./route";
 
 describe("POST material route conflicts", () => {
   it("maps an active reservation to an explicit 409 with owner metadata", async () => {
@@ -30,5 +30,26 @@ describe("POST material route conflicts", () => {
   });
   it("does not treat a created result as a conflict", () => {
     expect(materialConflictResponse({ kind: "created" })).toBeNull();
+  });
+});
+
+describe("GET materials route", () => {
+  it("returns experience cards with materials and facts", async () => {
+    const experiences = [{ id: "experience-1", title: "项目经历", status: "draft" }];
+    const handler = createGetMaterialsHandler({
+      initDatabase: vi.fn(async () => undefined),
+      listMaterials: vi.fn(async () => [{ id: "material-1" }]),
+      listFacts: vi.fn(async () => [{ id: "fact-1" }]),
+      listExperiences: vi.fn(async () => experiences),
+    });
+
+    const response = await handler();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      materials: [{ id: "material-1" }],
+      facts: [{ id: "fact-1" }],
+      experiences,
+    });
   });
 });

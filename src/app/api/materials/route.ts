@@ -5,7 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
-import { materials, profileFacts } from "@/db/schema";
+import { materials, profileExperiences, profileFacts } from "@/db/schema";
 import { chunkMaterial } from "@/domain/materials";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
 import { ingestMaterial, type IngestionResult } from "@/lib/material-ingestion";
@@ -55,12 +55,29 @@ export function materialConflictResponse(result: MaterialConflict) {
   return null;
 }
 
-export async function GET() {
-  await initDatabase();
-  const items = await db.select().from(materials).orderBy(desc(materials.createdAt));
-  const facts = await db.select().from(profileFacts);
-  return NextResponse.json({ materials: items, facts });
+export interface GetMaterialsRouteDependencies {
+  initDatabase(): Promise<void>;
+  listMaterials(): Promise<unknown[]>;
+  listFacts(): Promise<unknown[]>;
+  listExperiences(): Promise<unknown[]>;
 }
+
+export function createGetMaterialsHandler(dependencies: GetMaterialsRouteDependencies) {
+  return async function getMaterials() {
+    await dependencies.initDatabase();
+    const items = await dependencies.listMaterials();
+    const facts = await dependencies.listFacts();
+    const experiences = await dependencies.listExperiences();
+    return NextResponse.json({ materials: items, facts, experiences });
+  };
+}
+
+export const GET = createGetMaterialsHandler({
+  initDatabase,
+  listMaterials: () => db.select().from(materials).orderBy(desc(materials.createdAt)),
+  listFacts: () => db.select().from(profileFacts),
+  listExperiences: () => db.select().from(profileExperiences),
+});
 
 export async function POST(request: Request) {
   try {
