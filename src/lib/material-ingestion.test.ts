@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ingestMaterial,
+  reconcileExperienceDrafts,
   retrySmartExtraction,
   type IngestionDependencies,
   type RetrySmartExtractionDependencies,
 } from "./material-ingestion";
 import { sha256 } from "./material-dedup";
 import type { EvidenceFactInput } from "./profile-extraction";
+import type { ExtractedExperience } from "./material-smart-extraction";
+import type { ProfileExperience } from "../domain/experiences";
 
 const page = { page: 1, text: "GPA: 3.8\nProject Atlas" };
 const fact = (field: string, value: string, extractor = "local"): EvidenceFactInput => ({
@@ -17,6 +20,19 @@ const fact = (field: string, value: string, extractor = "local"): EvidenceFactIn
   evidence: value,
   page: 1,
   extractor,
+});
+const experience = (title: string, type: ExtractedExperience["type"] = "project"): ExtractedExperience => ({
+  type,
+  title,
+  background: `${title} background`,
+  responsibilities: `${title} responsibilities`,
+  methods: `${title} methods`,
+  results: `${title} results`,
+  awardRole: "",
+  source: "resume.txt",
+  page: 1,
+  evidence: { title, background: `${title} background` },
+  confidence: 0.8,
 });
 
 function ingestionDependencies(
@@ -39,7 +55,10 @@ function ingestionDependencies(
       position: { start: 0, end: item.text.length },
     }))),
     extractLocalFacts: vi.fn(() => [fact("GPA", "3.8")]),
-    extractSmartMaterialProfile: vi.fn(async () => ({ facts: [fact("项目经历", "Project Atlas", "qwen")] })),
+    extractSmartProfile: vi.fn(async () => ({
+      facts: [fact("项目经历", "Project Atlas", "qwen")],
+      experiences: [experience("Atlas"), experience("Beacon"), experience("Compass")],
+    })),
     persistCreated: vi.fn(async () => undefined),
     createId: () => "material-new",
     now: () => 200,
@@ -57,7 +76,7 @@ const input = {
 describe("material ingestion", () => {
   it("returns an exact duplicate before parsing, writing, or calling Qwen", async () => {
     const parseMaterial = vi.fn(async () => [page]);
-    const extractSmartMaterialProfile = vi.fn(async () => ({ facts: [] }));
+    const extractSmartProfile = vi.fn(async () => ({ facts: [], experiences: [] }));
     const writeUpload = vi.fn(async () => "unexpected");
     const deps = ingestionDependencies({
       listMaterials: vi.fn(async () => [{
@@ -68,7 +87,7 @@ describe("material ingestion", () => {
         createdAt: 100,
       }]),
       parseMaterial,
-      extractSmartMaterialProfile,
+      extractSmartProfile,
       writeUpload,
     });
 
@@ -79,7 +98,7 @@ describe("material ingestion", () => {
       material: { id: "material-old", name: "old-name.txt", createdAt: 100 },
     });
     expect(parseMaterial).not.toHaveBeenCalled();
-    expect(extractSmartMaterialProfile).not.toHaveBeenCalled();
+    expect(extractSmartProfile).not.toHaveBeenCalled();
     expect(writeUpload).not.toHaveBeenCalled();
   });
 
@@ -104,7 +123,7 @@ describe("material ingestion", () => {
     expect(results.map((result) => result.kind)).toContain("created");
     expect(results.map((result) => result.kind)).toSatisfy((kinds: string[]) => kinds.includes("in_progress") || kinds.includes("duplicate"));
     expect(deps.parseMaterial).toHaveBeenCalledOnce();
-    expect(deps.extractSmartMaterialProfile).toHaveBeenCalledOnce();
+    expect(deps.extractSmartProfile).toHaveBeenCalledOnce();
     expect(deps.persistCreated).toHaveBeenCalledOnce();
   });
 
@@ -205,21 +224,22 @@ describe("material ingestion", () => {
     const result = await ingestMaterial({ ...input, category: "reference" }, deps);
 
     expect(deps.extractLocalFacts).not.toHaveBeenCalled();
-    expect(deps.extractSmartMaterialProfile).not.toHaveBeenCalled();
+    expect(deps.extractSmartProfile).not.toHaveBeenCalled();
     expect(result).toMatchObject({ kind: "created", parseStatus: "complete", localFacts: 0, smartFacts: 0 });
   });
 
   it("keeps the local upload as basic_only when Qwen rejects", async () => {
     const deps = ingestionDependencies({
-      extractSmartMaterialProfile: vi.fn(async () => { throw new Error("model unavailable"); }),
+      extractSmartProfile: vi.fn(async () => { throw new Error("model unavailable"); }),
     });
 
     const result = await ingestMaterial(input, deps);
 
-    expect(result).toMatchObject({ kind: "created", parseStatus: "basic_only", localFacts: 1, smartFacts: 0 });
+    expect(result).toMatchObject({ kind: "created", parseStatus: "basic_only", localFacts: 1, smartFacts: 0, experiences: 0 });
     expect(deps.persistCreated).toHaveBeenCalledWith(expect.objectContaining({
       material: expect.objectContaining({ parseStatus: "basic_only" }),
       facts: [expect.objectContaining({ extractor: "local" })],
+      experiences: [],
     }));
   });
 
@@ -228,11 +248,49 @@ describe("material ingestion", () => {
 
     const result = await ingestMaterial(input, deps);
 
-    expect(result).toMatchObject({ kind: "created", parseStatus: "complete", localFacts: 1, smartFacts: 1 });
+    expect(result).toMatchObject({
+      kind: "created", parseStatus: "complete", localFacts: 1, smartFacts: 1, experiences: 3,
+    });
     expect(deps.persistCreated).toHaveBeenCalledWith(expect.objectContaining({ facts: expect.arrayContaining([
       expect.objectContaining({ extractor: "local" }),
       expect.objectContaining({ extractor: "qwen" }),
+    ]), experiences: expect.arrayContaining([
+      expect.objectContaining({ materialId: "material-new", title: "Atlas", status: "draft" }),
     ]) }));
+    const persisted = vi.mocked(deps.persistCreated).mock.calls[0][0];
+    expect(persisted.experiences).toHaveLength(3);
+  });
+});
+
+describe("experience draft reconciliation", () => {
+  const stored = (overrides: Partial<ProfileExperience>): ProfileExperience => ({
+    ...experience("Atlas"),
+    id: "draft-atlas",
+    materialId: "material-1",
+    status: "draft",
+    createdAt: 10,
+    updatedAt: 10,
+    ...overrides,
+  });
+
+  it("updates matching drafts, inserts new drafts, and preserves confirmed and stale cards", () => {
+    const existing = [
+      stored({ title: " Atlas ", methods: "old", createdAt: 10 }),
+      stored({ id: "confirmed-beacon", title: "BEACON", status: "confirmed", methods: "user edit", createdAt: 20 }),
+      stored({ id: "stale", title: "Stale", methods: "keep me", createdAt: 30 }),
+    ];
+    let id = 0;
+    const result = reconcileExperienceDrafts(existing, [
+      { ...experience("Ａｔｌａｓ"), materialId: "material-1", methods: "new model value" },
+      { ...experience(" beacon "), materialId: "material-1", methods: "must not overwrite" },
+      { ...experience("Compass"), materialId: "material-1" },
+    ], () => `new-${++id}`, () => 100);
+    expect(result).toEqual([
+      expect.objectContaining({ id: "draft-atlas", title: "Ａｔｌａｓ", methods: "new model value", createdAt: 10, updatedAt: 100 }),
+      existing[1],
+      existing[2],
+      expect.objectContaining({ id: "new-1", title: "Compass", status: "draft", createdAt: 100, updatedAt: 100 }),
+    ]);
   });
 });
 
@@ -251,13 +309,18 @@ function retryDependencies(
         { page: 1, start: 0, text: "one" },
       ],
       facts: [fact("技能", "TypeScript")],
+      experiences: [],
     })),
-    extractSmartMaterialProfile: vi.fn(async () => ({ facts: [
-      fact(" 技能 ", "typescript", "qwen"),
-      fact("项目经历", "Atlas", "qwen"),
-    ] })),
+    extractSmartProfile: vi.fn(async () => ({
+      facts: [
+        fact(" 技能 ", "typescript", "qwen"),
+        fact("项目经历", "Atlas", "qwen"),
+      ],
+      experiences: [experience("Atlas")],
+    })),
     persistRetry: vi.fn(async () => undefined),
     createId: () => "fact-new",
+    now: () => 300,
     ...overrides,
   };
 }
@@ -268,22 +331,56 @@ describe("smart extraction retry", () => {
 
     const result = await retrySmartExtraction("material-1", deps);
 
-    expect(deps.extractSmartMaterialProfile).toHaveBeenCalledWith([
+    expect(deps.extractSmartProfile).toHaveBeenCalledWith([
       { page: 1, text: "one\n\ntwo" },
       { page: 2, text: "three" },
     ], "resume.txt");
-    expect(result).toEqual({ smartFacts: 1 });
+    expect(result).toEqual({ smartFacts: 1, experiences: 1 });
     expect(deps.persistRetry).toHaveBeenCalledWith({
       materialId: "material-1",
       parseStatus: "complete",
       facts: [expect.objectContaining({ field: "项目经历", value: "Atlas", extractor: "qwen" })],
+      experienceUpdates: [],
+      experienceInserts: [expect.objectContaining({ title: "Atlas", status: "draft" })],
     });
   });
 
+  it("persists only matching draft updates and new draft inserts while protecting confirmed cards", async () => {
+    const draft: ProfileExperience = {
+      ...experience("Atlas"), id: "draft-atlas", materialId: "material-1", status: "draft", createdAt: 10, updatedAt: 10,
+    };
+    const confirmed: ProfileExperience = {
+      ...experience("Beacon"), id: "confirmed-beacon", materialId: "material-1", status: "confirmed",
+      methods: "user edit", createdAt: 20, updatedAt: 20,
+    };
+    let id = 0;
+    const deps = retryDependencies({
+      loadMaterial: vi.fn(async () => ({
+        id: "material-1", name: "resume.txt", category: "personal", parseStatus: "complete",
+        chunks: [{ page: 1, start: 0, text: "content" }], facts: [], experiences: [draft, confirmed],
+      })),
+      extractSmartProfile: vi.fn(async () => ({ facts: [], experiences: [
+        { ...experience(" Atlas "), methods: "refreshed" },
+        { ...experience("BEACON"), methods: "model overwrite" },
+        experience("Compass"),
+      ] })),
+      createId: () => `new-${++id}`,
+    });
+
+    await expect(retrySmartExtraction("material-1", deps)).resolves.toEqual({ smartFacts: 0, experiences: 2 });
+    expect(deps.persistRetry).toHaveBeenCalledWith(expect.objectContaining({
+      experienceUpdates: [expect.objectContaining({ id: "draft-atlas", methods: "refreshed", createdAt: 10 })],
+      experienceInserts: [expect.objectContaining({ id: "new-1", title: "Compass", status: "draft" })],
+    }));
+    const persisted = vi.mocked(deps.persistRetry).mock.calls[0][0];
+    expect([...persisted.experienceUpdates, ...persisted.experienceInserts]).not.toContainEqual(
+      expect.objectContaining({ id: "confirmed-beacon" }),
+    );
+  });
   it("does not mutate facts or status when the model call fails", async () => {
     const persistRetry = vi.fn(async () => undefined);
     const deps = retryDependencies({
-      extractSmartMaterialProfile: vi.fn(async () => { throw new Error("Qwen timeout"); }),
+      extractSmartProfile: vi.fn(async () => { throw new Error("Qwen timeout"); }),
       persistRetry,
     });
 

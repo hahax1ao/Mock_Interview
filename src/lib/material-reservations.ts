@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { materialChunks, materialHashReservations, materials, profileFacts } from "@/db/schema";
+import { materialChunks, materialHashReservations, materials, profileExperiences, profileFacts } from "@/db/schema";
 import type { PersistCreatedInput } from "./material-ingestion";
 
 export const MATERIAL_RESERVATION_LEASE_MS = 5 * 60_000;
@@ -59,6 +59,7 @@ export async function persistReservedMaterial(input: PersistCreatedInput) {
     await tx.insert(materials).values(input.material);
     if (input.chunks.length) await tx.insert(materialChunks).values(input.chunks);
     if (input.facts.length) await tx.insert(profileFacts).values(input.facts);
+    if (input.experiences.length) await tx.insert(profileExperiences).values(input.experiences);
   });
 }
 

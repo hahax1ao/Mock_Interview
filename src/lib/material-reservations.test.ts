@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { db, initDatabase } from "@/db/client";
-import { materialChunks, materialHashReservations, materials, profileFacts } from "@/db/schema";
+import { materialChunks, materialHashReservations, materials, profileExperiences, profileFacts } from "@/db/schema";
 import {
   persistReservedMaterial,
   reconcileMaterialHashReservations,
@@ -121,11 +121,13 @@ describe("material hash reservations", () => {
       material: { id: oldId, name: "old", category: "personal", mimeType: "text/plain", filePath: "old", status: "ready", contentHash, parseStatus: "complete", createdAt: 1 },
       chunks: [],
       facts: [{ id: `fact-${oldId}`, materialId: oldId, field: "model", value: "old", source: "old", confidence: 1, evidence: "old", page: 1, extractor: "qwen", confirmed: false }],
+      experiences: [],
     })).rejects.toThrow("reservation ownership lost");
     await persistReservedMaterial({
       material: { id: newId, name: "new", category: "personal", mimeType: "text/plain", filePath: "new", status: "ready", contentHash, parseStatus: "complete", createdAt: 2 },
       chunks: [],
       facts: [{ id: `fact-${newId}`, materialId: newId, field: "model", value: "new", source: "new", confidence: 1, evidence: "new", page: 1, extractor: "qwen", confirmed: false }],
+      experiences: [],
     });
 
     expect(await db.select().from(materials).where(eq(materials.contentHash, contentHash)))
@@ -139,17 +141,24 @@ describe("material hash reservations", () => {
     const materialId = `rollback-${crypto.randomUUID()}`;
     materialIds.push(materialId);
     await reserveMaterialHash(contentHash, { materialId, name: "rollback", createdAt: 1 }, 1_000);
-    const duplicateChunk = { id: `chunk-${crypto.randomUUID()}`, materialId, source: "x", page: 1, text: "x", start: 0, end: 1 };
+    const storedExperience = {
+      id: `experience-${crypto.randomUUID()}`, materialId, type: "project" as const, title: "Atlas",
+      background: "background", responsibilities: "responsibilities", methods: "methods", results: "results",
+      awardRole: "", source: "x", page: 1, evidence: { title: "Atlas", methods: "methods" }, confidence: 0.8,
+      status: "draft" as const, createdAt: 1, updatedAt: 1,
+    };
 
     await expect(persistReservedMaterial({
       material: { id: materialId, name: "rollback", category: "personal", mimeType: "text/plain", filePath: "rollback", status: "ready", contentHash, parseStatus: "complete", createdAt: 1 },
-      chunks: [duplicateChunk, duplicateChunk],
-      facts: [],
+      chunks: [{ id: `chunk-${crypto.randomUUID()}`, materialId, source: "x", page: 1, text: "x", start: 0, end: 1 }],
+      facts: [{ id: `fact-${crypto.randomUUID()}`, materialId, field: "model", value: "x", source: "x", confidence: 1, evidence: "x", page: 1, extractor: "qwen", confirmed: false }],
+      experiences: [storedExperience, storedExperience],
     })).rejects.toThrow();
 
     expect(await db.select().from(materials).where(eq(materials.id, materialId))).toEqual([]);
     expect(await db.select().from(materialChunks).where(eq(materialChunks.materialId, materialId))).toEqual([]);
-    expect(await db.select().from(materialHashReservations).where(eq(materialHashReservations.contentHash, contentHash)))
+    expect(await db.select().from(profileFacts).where(eq(profileFacts.materialId, materialId))).toEqual([]);
+    expect(await db.select().from(profileExperiences).where(eq(profileExperiences.materialId, materialId))).toEqual([]);    expect(await db.select().from(materialHashReservations).where(eq(materialHashReservations.contentHash, contentHash)))
       .toEqual([expect.objectContaining({ materialId, state: "pending" })]);
   });
 });

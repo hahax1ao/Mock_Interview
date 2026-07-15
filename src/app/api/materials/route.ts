@@ -8,7 +8,7 @@ import { db, initDatabase } from "@/db/client";
 import { materials, profileFacts } from "@/db/schema";
 import { chunkMaterial } from "@/domain/materials";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
-import { ingestMaterial } from "@/lib/material-ingestion";
+import { ingestMaterial, type IngestionResult } from "@/lib/material-ingestion";
 import { parseMaterial } from "@/lib/material-parser";
 import { extractSmartMaterialProfile } from "@/lib/material-smart-extraction";
 import { extractLocalFacts } from "@/lib/profile-extraction";
@@ -25,6 +25,20 @@ type MaterialConflict =
   | { kind: "in_progress"; owner: { id: string; name: string; createdAt: number } }
   | { kind: "created" };
 
+export function materialCreatedResponse(
+  result: Extract<IngestionResult, { kind: "created" }>,
+  file: { name: string; category: "personal" | "target" | "reference" },
+) {
+  return NextResponse.json({
+    material: { id: result.materialId, name: file.name, category: file.category },
+    pages: result.pages,
+    chunks: result.chunks,
+    parseStatus: result.parseStatus,
+    localFacts: result.localFacts,
+    smartFacts: result.smartFacts,
+    experiences: result.experiences,
+  }, { status: 201 });
+}
 export function materialConflictResponse(result: MaterialConflict) {
   if (result.kind === "duplicate") {
     return NextResponse.json({
@@ -93,7 +107,7 @@ export async function POST(request: Request) {
       parseMaterial,
       chunkMaterial,
       extractLocalFacts,
-      extractSmartMaterialProfile,
+      extractSmartProfile: extractSmartMaterialProfile,
       persistCreated: persistReservedMaterial,
       createId: randomUUID,
       now: Date.now,
@@ -102,14 +116,8 @@ export async function POST(request: Request) {
     const conflict = materialConflictResponse(result);
     if (conflict) return conflict;
     if (result.kind !== "created") throw new Error("材料哈希预留状态不一致");
-    return NextResponse.json({
-      material: { id: result.materialId, name: file.name, category },
-      pages: result.pages,
-      chunks: result.chunks,
-      parseStatus: result.parseStatus,
-      localFacts: result.localFacts,
-      smartFacts: result.smartFacts,
-    }, { status: 201 });
+    return materialCreatedResponse(result, { name: file.name, category });
+
   } catch (error) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : "材料解析失败",
