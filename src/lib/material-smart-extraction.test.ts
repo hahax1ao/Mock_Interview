@@ -406,6 +406,21 @@ describe("smart material extraction", () => {
     expect(options.timeoutMs).toBe(120_000);
   });
 
+  it("defines the complete nested extraction contract and forbids invented aliases", async () => {
+    const invoke = vi.fn<SmartExtractionInvoke>(async () => ({ facts: [], experiences: [] }));
+
+    await extractSmartMaterialProfile(pages, "jianli.pdf", invoke);
+
+    const system = invoke.mock.calls[0][0].system;
+    expect(system).toContain('"field":"项目经历|科研经历|竞赛经历|技能|荣誉"');
+    expect(system).toContain('"value":"string","evidence":"string","page":1,"confidence":0.0');
+    expect(system).toContain('"type":"research|project|competition"');
+    expect(system).toContain('"title":"string","background":"string","responsibilities":"string","methods":"string","results":"string","awardRole":"string"');
+    expect(system).toContain('"evidence":{"title":"string","background":"string or omit","responsibilities":"string or omit","methods":"string or omit","results":"string or omit","awardRole":"string or omit"}');
+    expect(system).toContain('facts 禁止使用别名 type、value_evidence');
+    expect(system).toContain('experiences 禁止使用别名 title_evidence、description、description_evidence');
+    expect(system).toContain("不得增加任何其他字段");
+  });
   it("extracts more than thirty experiences across bounded chunks", async () => {
     const manyPages = Array.from({ length: 36 }, (_, index) => ({
       page: index + 1,
