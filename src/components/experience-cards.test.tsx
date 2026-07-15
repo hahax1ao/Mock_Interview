@@ -149,6 +149,23 @@ describe("ExperienceCards", () => {
     fireEvent.click(screen.getAllByText("Super-LoRa")[0].closest("summary")!);
     expect(screen.getByRole("button", { name: "重新编辑" })).toBeVisible();
   });
+  it("uses the server value when a dirty draft becomes confirmed", () => {
+    const props = { busyId: null, onSave: vi.fn(), onConfirm: vi.fn() };
+    const { rerender } = render(<ExperienceCards experiences={[experience]} {...props} />);
+    fireEvent.change(screen.getByLabelText("量化成果"), { target: { value: "本地未保存修改" } });
+
+    rerender(
+      <ExperienceCards
+        experiences={[{ ...experience, status: "confirmed", results: "服务端确认结果" }]}
+        {...props}
+      />,
+    );
+
+    expect(screen.queryByLabelText("量化成果")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByText("Super-LoRa")[0].closest("summary")!);
+    expect(screen.getByText("服务端确认结果")).toBeInTheDocument();
+    expect(screen.queryByText("本地未保存修改")).not.toBeInTheDocument();
+  });
   it("accepts a props refresh that arrives before a successful save resolves", async () => {
     let finishSave: (() => void) | undefined;
     const onSave = vi.fn(() => new Promise<void>((resolve) => { finishSave = resolve; }));
@@ -207,15 +224,21 @@ describe("ExperienceCards", () => {
   });
   it("blocks every card action while another card save is pending", () => {
     const second = { ...experience, id: "experience-2", title: "Card B" };
+    const third = { ...experience, id: "experience-3", title: "Card C", status: "confirmed" as const };
+    const experiences = [experience, second, third];
     const onSave = vi.fn(() => new Promise<void>(() => undefined));
     const onConfirm = vi.fn();
-    const { rerender } = render(<ExperienceCards experiences={[experience, second]} busyId={null} onSave={onSave} onConfirm={onConfirm} />);
+    const { rerender } = render(<ExperienceCards experiences={experiences} busyId={null} onSave={onSave} onConfirm={onConfirm} />);
+    fireEvent.click(screen.getAllByText("Card C")[0].closest("summary")!);
     fireEvent.change(screen.getAllByLabelText("量化成果")[1], { target: { value: "Card B 未保存修改" } });
     fireEvent.click(screen.getAllByRole("button", { name: "保存修改" })[0]);
 
-    rerender(<ExperienceCards experiences={[experience, second]} busyId="experience-1" onSave={onSave} onConfirm={onConfirm} />);
+    rerender(<ExperienceCards experiences={experiences} busyId="experience-1" onSave={onSave} onConfirm={onConfirm} />);
     const saveButtons = screen.getAllByRole("button", { name: "保存修改" });
-    expect(saveButtons[1]).toBeDisabled();
+    expect(saveButtons).toHaveLength(2);
+    saveButtons.forEach((button) => expect(button).toBeDisabled());
+    screen.getAllByRole("button", { name: "确认整段经历" }).forEach((button) => expect(button).toBeDisabled());
+    expect(screen.getByRole("button", { name: "重新编辑" })).toBeDisabled();
     fireEvent.click(saveButtons[1]);
 
     expect(onSave).toHaveBeenCalledOnce();

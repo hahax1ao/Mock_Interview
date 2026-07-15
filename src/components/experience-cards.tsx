@@ -45,13 +45,15 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
   experiencesRef.current = experiences;
 
   useEffect(() => {
-    setDrafts((current) => Object.fromEntries(experiences.map((experience) => [
-      experience.id,
-      dirtyIds.current.has(experience.id) ? current[experience.id] ?? editableValue(experience) : editableValue(experience),
-    ])));
     const newlyConfirmedIds = new Set(experiences.filter((experience) =>
       experience.status === "confirmed" && serverStatuses.current.get(experience.id) === "draft"
     ).map((experience) => experience.id));
+    setDrafts((current) => Object.fromEntries(experiences.map((experience) => [
+      experience.id,
+      dirtyIds.current.has(experience.id) && !newlyConfirmedIds.has(experience.id)
+        ? current[experience.id] ?? editableValue(experience)
+        : editableValue(experience),
+    ])));
     newlyConfirmedIds.forEach((id) => dirtyIds.current.delete(id));
     setEditingIds((current) => new Set([...current].filter((id) => !newlyConfirmedIds.has(id))));
     serverStatuses.current = new Map(experiences.map((experience) => [experience.id, experience.status]));
