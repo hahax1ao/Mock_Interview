@@ -177,7 +177,7 @@ export default function Home() {
     value: ExperienceEditable,
     suffix = "",
   ) {
-    if (experienceBusyId) return;
+    if (experienceBusyId) throw new Error("another experience update is already in progress");
     const action = method === "POST" ? "确认" : "保存";
     let failureNoticeSet = false;
     setExperienceBusyId(id);

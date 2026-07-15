@@ -41,6 +41,7 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
   );
   const dirtyIds = useRef(new Set<string>());
   const experiencesRef = useRef(experiences);
+  const serverStatuses = useRef(new Map(experiences.map((experience) => [experience.id, experience.status])));
   experiencesRef.current = experiences;
 
   useEffect(() => {
@@ -48,9 +49,12 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
       experience.id,
       dirtyIds.current.has(experience.id) ? current[experience.id] ?? editableValue(experience) : editableValue(experience),
     ])));
-    const confirmedIds = new Set(experiences.filter((experience) => experience.status === "confirmed").map((experience) => experience.id));
-    confirmedIds.forEach((id) => dirtyIds.current.delete(id));
-    setEditingIds((current) => new Set([...current].filter((id) => !confirmedIds.has(id))));
+    const newlyConfirmedIds = new Set(experiences.filter((experience) =>
+      experience.status === "confirmed" && serverStatuses.current.get(experience.id) === "draft"
+    ).map((experience) => experience.id));
+    newlyConfirmedIds.forEach((id) => dirtyIds.current.delete(id));
+    setEditingIds((current) => new Set([...current].filter((id) => !newlyConfirmedIds.has(id))));
+    serverStatuses.current = new Map(experiences.map((experience) => [experience.id, experience.status]));
   }, [experiences]);
   function update(id: string, field: keyof ExperienceEditable, value: string) {
     dirtyIds.current.add(id);
@@ -104,7 +108,7 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
           <p><b>方法与过程</b>{draft.methods}</p>
           <p><b>量化成果</b>{draft.results}</p>
           <p><b>奖项 / 角色</b>{draft.awardRole}</p>
-          <button type="button" disabled={busyId === experience.id} onClick={() => setEditingIds((current) => new Set(current).add(experience.id))}>重新编辑</button>
+          <button type="button" disabled={busyId !== null} onClick={() => setEditingIds((current) => new Set(current).add(experience.id))}>重新编辑</button>
         </div> : <div className="experience-fields">
           <label htmlFor={`experience-${experience.id}-type`}>经历类型</label>
           <select id={`experience-${experience.id}-type`} value={draft.type} onChange={(event) => update(experience.id, "type", event.target.value as ExperienceType)}>
@@ -125,8 +129,8 @@ export function ExperienceCards({ experiences, busyId, onSave, onConfirm }: Expe
           <label htmlFor={`experience-${experience.id}-award-role`}>奖项 / 角色</label>
           <textarea id={`experience-${experience.id}-award-role`} value={draft.awardRole} onChange={(event) => update(experience.id, "awardRole", event.target.value)} />
           <div className="experience-actions">
-            <button type="button" disabled={busyId === experience.id} onClick={() => void save(experience.id, draft)}>保存修改</button>
-            <button type="button" disabled={busyId === experience.id} onClick={() => void confirm(experience.id, draft)}>确认整段经历</button>
+            <button type="button" disabled={busyId !== null} onClick={() => void save(experience.id, draft)}>保存修改</button>
+            <button type="button" disabled={busyId !== null} onClick={() => void confirm(experience.id, draft)}>确认整段经历</button>
           </div>
         </div>}
       </details>;

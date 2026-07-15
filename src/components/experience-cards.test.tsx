@@ -193,4 +193,32 @@ describe("ExperienceCards", () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
     expect(screen.getByLabelText("量化成果")).toBeInTheDocument();
   });
+  it("preserves a confirmed card re-edit across an unrelated confirmed refresh", () => {
+    const confirmed = { ...experience, status: "confirmed" as const };
+    const props = { busyId: null, onSave: vi.fn(), onConfirm: vi.fn() };
+    const { rerender } = render(<ExperienceCards experiences={[confirmed]} {...props} />);
+    fireEvent.click(screen.getAllByText("Super-LoRa")[0].closest("summary")!);
+    fireEvent.click(screen.getByRole("button", { name: "重新编辑" }));
+    fireEvent.change(screen.getByLabelText("量化成果"), { target: { value: "未保存的确认卡修改" } });
+
+    rerender(<ExperienceCards experiences={[{ ...confirmed, background: "无关服务端刷新" }]} {...props} />);
+
+    expect(screen.getByLabelText("量化成果")).toHaveValue("未保存的确认卡修改");
+  });
+  it("blocks every card action while another card save is pending", () => {
+    const second = { ...experience, id: "experience-2", title: "Card B" };
+    const onSave = vi.fn(() => new Promise<void>(() => undefined));
+    const onConfirm = vi.fn();
+    const { rerender } = render(<ExperienceCards experiences={[experience, second]} busyId={null} onSave={onSave} onConfirm={onConfirm} />);
+    fireEvent.change(screen.getAllByLabelText("量化成果")[1], { target: { value: "Card B 未保存修改" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "保存修改" })[0]);
+
+    rerender(<ExperienceCards experiences={[experience, second]} busyId="experience-1" onSave={onSave} onConfirm={onConfirm} />);
+    const saveButtons = screen.getAllByRole("button", { name: "保存修改" });
+    expect(saveButtons[1]).toBeDisabled();
+    fireEvent.click(saveButtons[1]);
+
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(screen.getAllByLabelText("量化成果")[1]).toHaveValue("Card B 未保存修改");
+  });
 });
