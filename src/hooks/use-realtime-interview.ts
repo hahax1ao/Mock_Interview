@@ -59,6 +59,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const sessionStarted = useRef(false);
   const connectionGeneration = useRef(0);
   const reconnectAttempts = useRef(0);
+  const roleInstructions = useRef<{ research?: string }>({});
 
   const drainEvents = useCallback(async () => {
     if (!interviewId) return;
@@ -142,10 +143,12 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     void saveEvent({ type: "connection", payload: { state: micAvailable.current ? "connected" : "text-fallback", atMs: elapsedMs.current } });
     const ws = socket.current;
     if (ws?.readyState === WebSocket.OPEN) {
-      const recent = transcriptRef.current.slice(-4).map((turn) => `${turn.role}: ${turn.text}`).join("\\n");
-      const instructions = elapsedMs.current === 0
+      const recent = transcriptRef.current.slice(-4).map((turn) => `${turn.role}: ${turn.text}`).join("\n");
+      const roleInstruction = lastRole.current === "research" ? roleInstructions.current.research : undefined;
+      const instructions = (elapsedMs.current === 0
         ? "你是主考官。现在正式开场，先简短问候，再只问一个自我介绍问题。"
-        : `刚才连接中断。现在由【${ROLE_LABEL[lastRole.current]}】承接已有对话继续，只问一个问题。最近转写：\\n${recent}`;
+        : `刚才连接中断。现在由【${ROLE_LABEL[lastRole.current]}】承接已有对话继续，只问一个问题。最近转写：\n${recent}`)
+        + (roleInstruction ? `\n${roleInstruction}` : "");
       ws.send(JSON.stringify({ type: "response.create", response: { instructions } }));
     }
     if (!timer.current) timer.current = setInterval(() => {
@@ -158,7 +161,8 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
         topicQuestionDepth.current = 0;
         stopAudio();
         current.send(JSON.stringify({ type: "response.cancel" }));
-        current.send(JSON.stringify({ type: "response.create", response: { instructions: `立即停止当前模块。现在由【${ROLE_LABEL[role]}】继续面试，只问一个问题。` } }));
+        const roleInstruction = role === "research" ? roleInstructions.current.research : undefined;
+        current.send(JSON.stringify({ type: "response.create", response: { instructions: `立即停止当前模块。现在由【${ROLE_LABEL[role]}】继续面试，只问一个问题。${roleInstruction ? `\n${roleInstruction}` : ""}` } }));
         void saveEvent({ type: "handoff", payload: { from: previous, to: role, atMs: elapsedMs.current } });
       }
     }, 1000);
@@ -209,7 +213,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     const session = await response.json();
     if (!isCurrent()) return;
     if (!response.ok) throw new Error(session.error ?? "无法创建实时会话");
-
+    roleInstructions.current = { ...roleInstructions.current, ...(session.roleInstructions ?? {}) };
     const context = new AudioContext();
     audio.current = context;
     await context.resume();
@@ -313,6 +317,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     eventQueue.current = [];
     topicQuestionDepth.current = 0;
     reconnectAttempts.current = 0;
+    roleInstructions.current = {};
     connectionGeneration.current += 1;
     micPermissionSettled.current = false;
     sessionStarted.current = false;

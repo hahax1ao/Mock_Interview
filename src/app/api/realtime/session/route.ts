@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
 import { interviews } from "@/db/schema";
+import { buildResearchHandoffInstruction } from "@/lib/experience-interview";
 import { issueRealtimeToken } from "@/lib/realtime-tokens";
 import { isQwenConfigured } from "@/lib/qwen";
 
@@ -18,7 +19,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "场次不存在或状态不允许连接" }, { status: 409 });
     }
     const credential = issueRealtimeToken(interviewId);
-    return NextResponse.json({ ...credential, websocketPath: `/realtime?token=${credential.token}` });
+    const research = await buildResearchHandoffInstruction(interviewId);
+    return NextResponse.json({
+      ...credential,
+      websocketPath: `/realtime?token=${credential.token}`,
+      roleInstructions: { ...(research ? { research } : {}) },
+    });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "创建实时会话失败" }, { status: 400 });
   }

@@ -38,10 +38,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function mountInterview() {
+function mountInterview(onElapsed: (delta: number) => "chair" | "technical" | "research" | "english" = () => "chair") {
   let interview: ReturnType<typeof useRealtimeInterview> | null = null;
   function Harness() {
-    interview = useRealtimeInterview("interview-1", () => "chair");
+    interview = useRealtimeInterview("interview-1", onElapsed);
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -54,6 +54,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   FakeWebSocket.instances = [];
   FakeAudioContext.instances = [];
+  vi.useRealTimers();
 });
 
 describe("realtime async lifecycle", () => {
@@ -96,6 +97,41 @@ describe("realtime async lifecycle", () => {
     await act(async () => connection);
 
     expect(FakeAudioContext.instances[0].createMediaStreamSource).not.toHaveBeenCalled();
+    act(() => mounted.root.unmount());
+  });
+
+  it("reuses the research core-experience requirement after reconnect", async () => {
+    vi.useFakeTimers();
+    const researchInstruction = "核心经历：高吞吐量通信协议研究。第一问必须询问个人职责。";
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    let sessionRequests = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) !== "/api/realtime/session") return { ok: true, json: async () => ({}) };
+      sessionRequests += 1;
+      return {
+        ok: true,
+        json: async () => sessionRequests === 1
+          ? { websocketPath: "/realtime?token=test", roleInstructions: { research: researchInstruction } }
+          : { websocketPath: "/realtime?token=test", roleInstructions: {} },
+      };
+    }));
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) } });
+    const mounted = mountInterview(() => "research");
+    await act(async () => mounted.interview.connect());
+    const first = FakeWebSocket.instances[0];
+    act(() => first.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    act(() => vi.advanceTimersByTime(1_000));
+
+    act(() => first.onclose?.({ reason: "network" } as CloseEvent));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    const second = FakeWebSocket.instances[1];
+    act(() => second.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+
+    const instructions = second.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)))
+      .find((payload) => payload.type === "response.create")?.response.instructions;
+    expect(instructions).toContain(researchInstruction);
     act(() => mounted.root.unmount());
   });
 });

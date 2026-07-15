@@ -16,7 +16,7 @@ class FakeWebSocket {
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   constructor() { FakeWebSocket.instance = this; }
-  send() {}
+  send = vi.fn();
   close() {}
 }
 
@@ -35,6 +35,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   FakeWebSocket.instance = null;
+  vi.useRealTimers();
 });
 
 describe("realtime connection setup", () => {
@@ -63,6 +64,41 @@ describe("realtime connection setup", () => {
     await vi.waitFor(() => expect(FakeWebSocket.instance).not.toBeNull());
 
     expect(FakeWebSocket.instance?.onmessage).toBeTypeOf("function");
+    act(() => root.unmount());
+  });
+
+  it("appends the research core-experience requirement on timed handoff", async () => {
+    vi.useFakeTimers();
+    const researchInstruction = "核心经历：高吞吐量通信协议研究。第一问必须点名该经历并询问个人职责。";
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ websocketPath: "/realtime?token=test", roleInstructions: { research: researchInstruction } }),
+    }));
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    const onElapsed = vi.fn().mockReturnValueOnce("technical").mockReturnValue("research");
+    let interview: ReturnType<typeof useRealtimeInterview> | null = null;
+    function Harness() {
+      interview = useRealtimeInterview("interview-1", onElapsed);
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(React.createElement(Harness)));
+    await act(async () => interview!.connect());
+    const ws = FakeWebSocket.instance!;
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+
+    act(() => vi.advanceTimersByTime(2_000));
+
+    const instructions = ws.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)))
+      .filter((payload) => payload.type === "response.create")
+      .map((payload) => payload.response.instructions);
+    expect(instructions.at(-1)).toContain(researchInstruction);
     act(() => root.unmount());
   });
 });

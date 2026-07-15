@@ -3,6 +3,7 @@ import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, initDatabase } from "@/db/client";
 import { interviewEvents, interviews } from "@/db/schema";
+import { buildResearchHandoffInstruction } from "@/lib/experience-interview";
 import { buildInterviewContext } from "@/lib/interview-context";
 import { interviewerPrompt } from "@/lib/interviewer-prompt";
 import { models } from "@/lib/models";
@@ -24,15 +25,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!interview || !["ready", "active"].includes(interview.status)) {
       return NextResponse.json({ error: "场次不存在或已结束" }, { status: 409 });
     }
-    const [context, recent] = await Promise.all([
+    const [context, recent, researchInstruction] = await Promise.all([
       buildInterviewContext(id),
       db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, id)).orderBy(desc(interviewEvents.createdAt)).limit(12),
+      input.role === "research" ? buildResearchHandoffInstruction(id) : Promise.resolve(undefined),
     ]);
     const history = recent.reverse().filter((event) => event.type === "transcript").map((event) => JSON.stringify(event.payload)).join("\n");
     const completion = await qwenClient().chat.completions.create({
       model: models.expressionReview,
       messages: [
-        { role: "system", content: `${interviewerPrompt}\n当前角色：${roleLabel[input.role]}。这是文字降级模式，只追问一个问题，不提示答案。${context}` },
+        { role: "system", content: `${interviewerPrompt}\n当前角色：${roleLabel[input.role]}。这是文字降级模式，只追问一个问题，不提示答案。${context}${researchInstruction ? `\n${researchInstruction}` : ""}` },
         { role: "user", content: `已有转写：\n${history}\n候选人刚才回答：${input.text}` },
       ],
       max_tokens: 300,
