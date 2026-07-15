@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { deleteMaterial } from "@/app/api/materials/[id]/route";
 import { resolveLocalStorageRoot } from "@/lib/local-storage";
 import { db, initDatabase } from "./client";
-import { interviewEvents, interviews, materialChunks, materialHashReservations, materials, profileFacts, reviewReports } from "./schema";
+import { interviewEvents, interviews, materialChunks, materialHashReservations, materials, profileExperiences, profileFacts, reviewReports } from "./schema";
 
 describe("interview cascade deletion", () => {
   it("removes transcripts and derived review reports", async () => {
@@ -61,6 +61,25 @@ describe("interview cascade deletion", () => {
       id: crypto.randomUUID(), materialId, field: "major", value: "CS", source: "resume.pdf",
       confidence: 1, confirmed: true,
     });
+    const experienceId = crypto.randomUUID();
+    await db.insert(profileExperiences).values({
+      id: experienceId,
+      materialId,
+      type: "research",
+      title: "载荷叠加通信研究",
+      background: "提升 IoT 吞吐量",
+      responsibilities: "实现物理层驱动",
+      methods: "SDR 与 De-chirp",
+      results: "吞吐量提升 1.35 倍",
+      awardRole: "",
+      source: "resume.pdf",
+      page: 1,
+      evidence: { title: "载荷叠加通信研究", results: "吞吐量提升 1.35 倍" },
+      confidence: 0.9,
+      status: "draft",
+      createdAt: 1,
+      updatedAt: 1,
+    });
     await db.insert(interviews).values({
       id: interviewId, status: "finished", duration: 10, focus: "history", pressure: "adaptive",
       materialIds: [materialId], plan: [], createdAt: Date.now(),
@@ -72,6 +91,7 @@ describe("interview cascade deletion", () => {
 
     expect(await db.select().from(materialChunks).where(eq(materialChunks.materialId, materialId))).toHaveLength(0);
     expect(await db.select().from(profileFacts).where(eq(profileFacts.materialId, materialId))).toHaveLength(0);
+    expect(await db.select().from(profileExperiences).where(eq(profileExperiences.materialId, materialId))).toEqual([]);
     const [history] = await db.select().from(interviews).where(eq(interviews.id, interviewId));
     expect(history.materialIds).toEqual([materialId]);
     await db.delete(interviews).where(eq(interviews.id, interviewId));

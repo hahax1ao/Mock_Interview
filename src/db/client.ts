@@ -38,6 +38,24 @@ export function initDatabase() {
         id TEXT PRIMARY KEY, material_id TEXT REFERENCES materials(id) ON DELETE CASCADE,
         field TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS profile_experiences (
+        id TEXT PRIMARY KEY,
+        material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        background TEXT NOT NULL DEFAULT '',
+        responsibilities TEXT NOT NULL DEFAULT '',
+        methods TEXT NOT NULL DEFAULT '',
+        results TEXT NOT NULL DEFAULT '',
+        award_role TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL,
+        page INTEGER NOT NULL,
+        evidence TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS interviews (
         id TEXT PRIMARY KEY, status TEXT NOT NULL, duration INTEGER NOT NULL, focus TEXT NOT NULL,
         pressure TEXT NOT NULL, material_ids TEXT NOT NULL, plan TEXT NOT NULL,

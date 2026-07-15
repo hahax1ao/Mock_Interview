@@ -1,3 +1,4 @@
+import type { ExperienceEvidence } from "@/domain/experiences";
 import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const materials = sqliteTable("materials", {
@@ -41,6 +42,25 @@ export const profileFacts = sqliteTable("profile_facts", {
   page: integer("page").default(1),
   extractor: text("extractor").default("local"),
   confirmed: integer("confirmed", { mode: "boolean" }).notNull().default(false),
+});
+
+export const profileExperiences = sqliteTable("profile_experiences", {
+  id: text("id").primaryKey(),
+  materialId: text("material_id").notNull().references(() => materials.id, { onDelete: "cascade" }),
+  type: text("type").$type<"research" | "project" | "competition">().notNull(),
+  title: text("title").notNull(),
+  background: text("background").notNull().default(""),
+  responsibilities: text("responsibilities").notNull().default(""),
+  methods: text("methods").notNull().default(""),
+  results: text("results").notNull().default(""),
+  awardRole: text("award_role").notNull().default(""),
+  source: text("source").notNull(),
+  page: integer("page").notNull(),
+  evidence: text("evidence", { mode: "json" }).$type<ExperienceEvidence>().notNull(),
+  confidence: real("confidence").notNull(),
+  status: text("status").$type<"draft" | "confirmed">().notNull().default("draft"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
 });
 
 export const interviews = sqliteTable("interviews", {

@@ -38,6 +38,7 @@ describe("legacy SQLite migration", () => {
 
     const materialInfo = await db.run(sql`PRAGMA table_info(materials)`);
     const factInfo = await db.run(sql`PRAGMA table_info(profile_facts)`);
+    const experienceInfo = await db.run(sql`PRAGMA table_info(profile_experiences)`);
     const reservationInfo = await db.run(sql`PRAGMA table_info(material_hash_reservations)`);
     const materialColumns = Object.fromEntries(materialInfo.rows.map((row) => [row.name, row]));
     const factColumns = Object.fromEntries(factInfo.rows.map((row) => [row.name, row]));
@@ -53,5 +54,10 @@ describe("legacy SQLite migration", () => {
     expect(reservationColumns.state?.notnull).toBe(1);
     expect(reservationColumns.state?.dflt_value).toBe("'committed'");
     expect(reservationColumns.lease_until).toBeDefined();
+    expect(experienceInfo.rows.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "id", "material_id", "type", "title", "background", "responsibilities",
+      "methods", "results", "award_role", "source", "page", "evidence",
+      "confidence", "status", "created_at", "updated_at",
+    ]));
   });
 });
