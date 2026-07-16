@@ -42,7 +42,7 @@ const researchClaimWaitMs = 2_000;
 const researchClaimPollMs = 20;
 
 type ResearchClaimPayload = { status: "pending" | "completed"; leaseUntil: number | null };
-type ResearchClaimResult = { status: "owner"; claimId: string } | { status: "completed" | "busy" };
+type ResearchClaimResult = { status: "owner"; claimId: string } | { status: "busy" };
 type RecentEvent = typeof interviewEvents.$inferSelect;
 
 function readResearchClaim(payload: unknown): ResearchClaimPayload | undefined {
@@ -87,7 +87,15 @@ async function acquireResearchClaim(interviewId: string): Promise<ResearchClaimR
       eq(interviewEvents.type, researchClaimType),
     )).limit(1);
     const claim = existing ? readResearchClaim(existing.payload) : undefined;
-    if (claim?.status === "completed") return { status: "completed" };
+    if (existing && claim?.status === "completed") {
+      const deleted = await db.delete(interviewEvents).where(and(
+        eq(interviewEvents.id, existing.id),
+        eq(interviewEvents.interviewId, interviewId),
+        eq(interviewEvents.type, researchClaimType),
+        sql`json_extract(${interviewEvents.payload}, '$.status') = 'completed'`,
+      )).returning({ id: interviewEvents.id });
+      if (deleted.length === 1) continue;
+    }
     if (existing && claim?.status === "pending" && (claim.leaseUntil ?? 0) <= now) {
       const deleted = await db.delete(interviewEvents).where(and(
         pendingClaimCondition(interviewId, existing.id),
@@ -173,65 +181,52 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!interview || !["ready", "active"].includes(interview.status)) {
       return NextResponse.json({ error: "场次不存在或已结束" }, { status: 409 });
     }
-    const duration = interview.duration as 10 | 20 | 30;
-    const [recentDescending, loadedControls, priorTranscripts] = await Promise.all([
-      db.select().from(interviewEvents)
-        .where(eq(interviewEvents.interviewId, id))
-        .orderBy(desc(interviewEvents.createdAt))
-        .limit(12),
-      loadQuestionControls(id),
-      db.select({ payload: interviewEvents.payload }).from(interviewEvents).where(and(
-        eq(interviewEvents.interviewId, id),
-        eq(interviewEvents.type, "transcript"),
-      )),
-    ]);
-    const recent = recentDescending.reverse();
-    let controls = loadedControls;
-    const hasPriorResearchQuestion = priorTranscripts.some(({ payload }) =>
-      payload && typeof payload === "object" && "role" in payload && payload.role === "research",
-    );
-    let control = input.role === "chair"
-      ? createChairControl(input.atMs, input.atMs >= duration * 60_000 - 60_000)
-      : decideNextQuestion({
-        duration,
-        role: input.role,
-        elapsedMs: input.atMs,
-        moduleRemainingMs: remainingMsForRole(duration, input.role, input.atMs),
-        controls,
-      });
 
-    let researchInstruction: string | undefined;
     let claimId: string | undefined;
-    const firstResearchNewTopic = control.role === "research"
-      && control.kind === "new_topic"
-      && !controls.some((saved) => saved.role === "research" && saved.kind === "new_topic")
-      && !hasPriorResearchQuestion;
-    if (firstResearchNewTopic) {
+    if (input.role === "research") {
       const claim = await acquireResearchClaim(id);
       if (claim.status === "busy") {
-        return NextResponse.json({ error: "首个科研问题正在生成，请稍后重试" }, { status: 409 });
+        return NextResponse.json({ error: "科研问题正在生成，请稍后重试" }, { status: 409 });
       }
-      if (claim.status === "completed") {
-        controls = await loadQuestionControls(id);
-        control = decideNextQuestion({
-          duration,
-          role: "research",
-          elapsedMs: input.atMs,
-          moduleRemainingMs: remainingMsForRole(duration, "research", input.atMs),
-          controls,
-        });
-      } else if (claim.status === "owner") {
-        claimId = claim.claimId;
-        try {
-          researchInstruction = await buildResearchHandoffInstruction(id);
-        } catch (error) {
-          await releasePendingResearchClaim(id, claimId);
-          throw error;
-        }
-      }
+      claimId = claim.claimId;
     }
 
     try {
+      const duration = interview.duration as 10 | 20 | 30;
+      const [recentDescending, controls, priorTranscripts] = await Promise.all([
+        db.select().from(interviewEvents)
+          .where(eq(interviewEvents.interviewId, id))
+          .orderBy(desc(interviewEvents.createdAt))
+          .limit(12),
+        loadQuestionControls(id),
+        db.select({ payload: interviewEvents.payload }).from(interviewEvents).where(and(
+          eq(interviewEvents.interviewId, id),
+          eq(interviewEvents.type, "transcript"),
+        )),
+      ]);
+      const recent = recentDescending.reverse();
+      const hasPriorResearchQuestion = priorTranscripts.some(({ payload }) =>
+        payload && typeof payload === "object" && "role" in payload && payload.role === "research",
+      );
+      let control = input.role === "chair"
+        ? createChairControl(input.atMs, input.atMs >= duration * 60_000 - 60_000)
+        : decideNextQuestion({
+          duration,
+          role: input.role,
+          elapsedMs: input.atMs,
+          moduleRemainingMs: remainingMsForRole(duration, input.role, input.atMs),
+          controls,
+        });
+
+      let researchInstruction: string | undefined;
+      const firstResearchNewTopic = control.role === "research"
+        && control.kind === "new_topic"
+        && !controls.some((saved) => saved.role === "research" && saved.kind === "new_topic")
+        && !hasPriorResearchQuestion;
+      if (firstResearchNewTopic) {
+        researchInstruction = await buildResearchHandoffInstruction(id);
+      }
+
       let reply: string;
       if (control.role === "english" && control.kind === "new_topic") {
         if (!control.questionText) throw new Error("英语题库问题缺少文本");
@@ -292,12 +287,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const validatedControl = QuestionControlSchema.parse(control);
       const now = Date.now();
       await db.transaction(async (tx) => {
-        if (claimId) {
-          const completed = await tx.update(interviewEvents).set({
-            payload: { status: "completed", leaseUntil: null },
-          }).where(pendingClaimCondition(id, claimId)).returning({ id: interviewEvents.id });
-          if (completed.length !== 1) throw new Error("科研首问所有权已失效，请重试");
-        }
         await tx.insert(interviewEvents).values([
           {
             id: crypto.randomUUID(),
@@ -335,6 +324,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             createdAt: now + 2,
           },
         ]);
+        if (claimId) {
+          const released = await tx.delete(interviewEvents)
+            .where(pendingClaimCondition(id, claimId))
+            .returning({ id: interviewEvents.id });
+          if (released.length !== 1) throw new Error("科研问题锁所有权已失效，请重试");
+        }
         if (interview.status === "ready") {
           await tx.update(interviews).set({ status: "active", startedAt: now })
             .where(eq(interviews.id, id));

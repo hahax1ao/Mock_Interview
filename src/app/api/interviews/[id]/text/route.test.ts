@@ -107,9 +107,8 @@ describe("POST text interview research questions", () => {
     expect(bodies.filter(({ control }) => control.kind === "new_topic")).toHaveLength(1);
     expect(bodies.filter(({ control }) => control.kind === "follow_up")).toHaveLength(1);
     const claims = await db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, id));
-    expect(claims).toContainEqual(expect.objectContaining({
+    expect(claims).not.toContainEqual(expect.objectContaining({
       type: "research_initial_claim",
-      payload: { status: "completed", leaseUntil: null },
     }));
     const researchControls = claims.filter(({ type, payload }) =>
       type === "question_control"
@@ -122,6 +121,81 @@ describe("POST text interview research questions", () => {
     )).toHaveLength(1);
   });
 
+  it("serializes three concurrent research requests against the latest coverage state", async () => {
+    const id = await createInterview(20);
+    let releaseFirst!: () => void;
+    let releaseLater!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const laterGate = new Promise<void>((resolve) => { releaseLater = resolve; });
+    createCompletion.mockImplementation(async () => {
+      if (createCompletion.mock.calls.length === 1) await firstGate;
+      else await laterGate;
+      return { choices: [{ message: { content: "next question" } }] };
+    });
+
+    const requests = [postResearch(id), postResearch(id), postResearch(id)];
+    await vi.waitFor(() => expect(createCompletion).toHaveBeenCalledTimes(1));
+    releaseFirst();
+    await vi.waitFor(() => expect(createCompletion.mock.calls.length).toBeGreaterThanOrEqual(2));
+    try {
+      await vi.waitFor(() => expect(createCompletion).toHaveBeenCalledTimes(3), { timeout: 150 });
+    } catch {
+      // Under the fixed lock, the third request cannot decide or call the model yet.
+    }
+    expect(createCompletion).toHaveBeenCalledTimes(2);
+    releaseLater();
+    const responses = await Promise.all(requests);
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+    const newTopics = bodies
+      .map(({ control }) => control as QuestionControl)
+      .filter((control) => control.kind === "new_topic");
+    expect(newTopics).toHaveLength(2);
+    expect(new Set(newTopics.map(({ topicId }) => topicId)).size).toBe(2);
+    expect(bodies.filter(({ control }) => control.kind === "follow_up")).toHaveLength(1);
+    expect(createCompletion.mock.calls.filter((call) =>
+      call[0].messages[0].content.includes("FIRST_RESEARCH_PROJECT_QUESTION"),
+    )).toHaveLength(1);
+
+    const events = await db.select().from(interviewEvents)
+      .where(eq(interviewEvents.interviewId, id));
+    const savedNewTopics = events
+      .filter(({ type, payload }) =>
+        type === "question_control"
+        && payload && typeof payload === "object"
+        && "role" in payload && payload.role === "research"
+        && "kind" in payload && payload.kind === "new_topic",
+      )
+      .map(({ payload }) => payload as QuestionControl);
+    expect(savedNewTopics).toHaveLength(2);
+    expect(new Set(savedNewTopics.map(({ topicId }) => topicId)).size).toBe(2);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "research_initial_claim" }));
+  });
+
+  it("recovers an expired research lease before scheduling", async () => {
+    const id = await createInterview(10);
+    await db.insert(interviewEvents).values({
+      id: crypto.randomUUID(),
+      interviewId: id,
+      type: "research_initial_claim",
+      payload: { status: "pending", leaseUntil: Date.now() - 1 },
+      createdAt: Date.now() - 120_001,
+    });
+
+    const response = await postResearch(id);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.control).toEqual(expect.objectContaining({
+      role: "research",
+      kind: "new_topic",
+      topicId: "responsibility",
+    }));
+    const events = await db.select().from(interviewEvents)
+      .where(eq(interviewEvents.interviewId, id));
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "research_initial_claim" }));
+  });
   it("releases a failed initial claim so retry receives the initial instruction", async () => {
     const id = await createInterview();
     createCompletion
