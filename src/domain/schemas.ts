@@ -32,8 +32,20 @@ export const TranscriptTurnSchema = z.object({
 });
 export type TranscriptTurn = z.infer<typeof TranscriptTurnSchema>;
 
+export const QuestionControlSchema = z.object({
+  role: z.enum(["chair", "technical", "research", "english"]),
+  kind: z.enum(["new_topic", "follow_up", "closing"]),
+  topicId: z.string().min(1),
+  topicCategory: z.string().min(1),
+  questionId: z.string().min(1).optional(),
+  questionText: z.string().min(1).optional(),
+  followUpDepth: z.number().int().min(0).max(3),
+  issuedAtMs: z.number().nonnegative(),
+});
+
 export const InterviewEventSchema = z.discriminatedUnion("type", [
   z.object({ id: z.string().uuid().optional(), type: z.literal("transcript"), payload: TranscriptTurnSchema }),
+  z.object({ id: z.string().uuid().optional(), type: z.literal("question_control"), payload: QuestionControlSchema }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("handoff"), payload: z.object({ from: InterviewRoleSchema, to: InterviewRoleSchema, atMs: z.number() }) }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("interruption"), payload: z.object({ atMs: z.number(), role: InterviewRoleSchema }) }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("connection"), payload: z.object({ state: z.enum(["connected", "disconnected", "reconnecting", "text-fallback"]), atMs: z.number() }) }),

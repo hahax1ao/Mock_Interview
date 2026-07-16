@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { ReviewEntrySchema } from "./schemas";
+import { InterviewEventSchema, ReviewEntrySchema } from "./schemas";
+
+describe("interview event validation", () => {
+  it("accepts a validated question-control event", () => {
+    expect(InterviewEventSchema.parse({
+      type: "question_control",
+      payload: {
+        role: "english",
+        kind: "new_topic",
+        topicId: "english-hometown",
+        topicCategory: "personal",
+        questionId: "english-hometown",
+        questionText: "Introduce your hometown briefly.",
+        followUpDepth: 0,
+        issuedAtMs: 1000,
+      },
+    }).type).toBe("question_control");
+  });
+});
 
 describe("review output normalization", () => {
   it("normalizes common Chinese enum labels from model output", () => {
