@@ -1,9 +1,12 @@
+import { topicTargetsForDuration, type CoreInterviewRole } from "./question-coverage";
+
 export type InterviewRole = "chair" | "technical" | "research" | "english" | "candidate";
 
 export interface InterviewSegment {
   role: Exclude<InterviewRole, "candidate">;
   minutes: number;
   label: string;
+  topicTarget?: number;
 }
 
 const templates: Record<10 | 20 | 30, number[]> = {
@@ -16,7 +19,32 @@ const roles: InterviewSegment["role"][] = ["chair", "technical", "research", "en
 const labels = ["开场", "专业基础", "科研项目", "英语交流", "综合与收尾"];
 
 export function createInterviewPlan(duration: 10 | 20 | 30): InterviewSegment[] {
-  return templates[duration].map((minutes, index) => ({ role: roles[index], minutes, label: labels[index] }));
+  const targets = topicTargetsForDuration(duration);
+  return templates[duration].map((minutes, index) => {
+    const role = roles[index];
+    if (role === "technical" || role === "research" || role === "english") {
+      return { role, minutes, label: labels[index], topicTarget: targets[role] };
+    }
+    return { role, minutes, label: labels[index] };
+  });
+}
+
+export function remainingMsForRole(
+  duration: 10 | 20 | 30,
+  role: CoreInterviewRole,
+  elapsedMs: number,
+) {
+  let segmentStartMs = 0;
+  for (const segment of createInterviewPlan(duration)) {
+    const segmentEndMs = segmentStartMs + segment.minutes * 60_000;
+    if (segment.role === role) {
+      return elapsedMs >= segmentStartMs && elapsedMs < segmentEndMs
+        ? segmentEndMs - elapsedMs
+        : 0;
+    }
+    segmentStartMs = segmentEndMs;
+  }
+  return 0;
 }
 
 export class InterviewClock {
