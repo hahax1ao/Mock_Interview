@@ -6,7 +6,7 @@ import { interviews } from "@/db/schema";
 import { buildResearchHandoffInstruction } from "@/lib/experience-interview";
 import { issueRealtimeToken } from "@/lib/realtime-tokens";
 import { isQwenConfigured } from "@/lib/qwen";
-import { loadQuestionControls } from "@/lib/question-control-store";
+import { loadQuestionControlSessionState } from "@/lib/question-control-store";
 
 const schema = z.object({ interviewId: z.string().uuid() });
 
@@ -20,15 +20,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "场次不存在或状态不允许连接" }, { status: 409 });
     }
     const credential = issueRealtimeToken(interviewId);
-    const [research, questionControls] = await Promise.all([
+    const [research, controlState] = await Promise.all([
       buildResearchHandoffInstruction(interviewId),
-      loadQuestionControls(interviewId),
+      loadQuestionControlSessionState(interviewId),
     ]);
     return NextResponse.json({
       ...credential,
       websocketPath: `/realtime?token=${credential.token}`,
       duration: interview.duration,
-      questionControls,
+      questionControls: controlState.controls,
+      pendingControl: controlState.pendingControl,
       roleInstructions: { ...(research ? { research } : {}) },
     });
   } catch (error) {

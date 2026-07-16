@@ -196,6 +196,70 @@ describe("realtime async lifecycle", () => {
     act(() => mounted.root.unmount());
   });
 
+  it("resends the same persisted control after response.create throws and a reconnect rebuilds the page state", async () => {
+    vi.useFakeTimers();
+    const savedEvents: Array<{ id: string; type: string; payload: Record<string, unknown> }> = [];
+    let sessionRequests = 0;
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/realtime/session") {
+        sessionRequests += 1;
+        const savedControl = savedEvents.findLast(({ type }) => type === "question_control");
+        return sessionResponse(sessionRequests === 1 || !savedControl
+          ? {}
+          : {
+            questionControls: [savedControl.payload],
+            pendingControl: { id: savedControl.id, control: savedControl.payload },
+          });
+      }
+      const events = JSON.parse(String(init?.body)).events;
+      savedEvents.push(...events);
+      return { ok: true, json: async () => ({ saved: events.length }) };
+    });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    const mounted = mountInterview(() => "technical");
+    await act(async () => mounted.interview.connect());
+    const first = FakeWebSocket.instances[0];
+    act(() => first.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    let attemptedInstruction = "";
+    first.send.mockImplementation((payload) => {
+      const message = JSON.parse(String(payload));
+      if (message.type === "response.create") {
+        attemptedInstruction = message.response.instructions;
+        throw new Error("socket closed during send");
+      }
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    await vi.waitFor(() => expect(savedEvents.some(({ type }) => type === "question_control")).toBe(true));
+    expect(attemptedInstruction).toContain("开始新的 signals 主题");
+
+    act(() => first.onclose?.({ reason: "network" } as CloseEvent));
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    const second = FakeWebSocket.instances[1];
+    act(() => second.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    await vi.waitFor(() => expect(second.send).toHaveBeenCalled());
+
+    const resentInstruction = second.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)))
+      .filter((message) => message.type === "response.create")
+      .at(-1).response.instructions;
+    expect(resentInstruction).toBe(attemptedInstruction);
+    expect(savedEvents.filter(({ type }) => type === "question_control")).toHaveLength(1);
+    expect(savedEvents).toContainEqual(expect.objectContaining({
+      type: "question_delivery",
+      payload: expect.objectContaining({
+        controlId: savedEvents.find(({ type }) => type === "question_control")!.id,
+      }),
+    }));
+    act(() => mounted.root.unmount());
+  });
+
   it("issues a chair closing control when the clock enters the last minute", async () => {
     vi.useFakeTimers();
     let tick = 0;
@@ -267,6 +331,88 @@ describe("realtime async lifecycle", () => {
     expect(ws.send.mock.calls
       .map(([payload]) => JSON.parse(String(payload)))
       .filter((payload) => payload.type === "response.create")).toHaveLength(0);
+    act(() => mounted.root.unmount());
+  });
+
+  it("keeps the interview clock and timed roles advancing in text mode", async () => {
+    vi.useFakeTimers();
+    const roles = ["technical", "research", "english", "chair"] as const;
+    const onElapsed = vi.fn(() => roles[Math.min(onElapsed.mock.calls.length, roles.length - 1)]);
+    const textRequests: Array<{ role: string; atMs: number }> = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/realtime/session") return sessionResponse({ duration: 10 });
+      if (String(input).endsWith("/text")) {
+        textRequests.push(JSON.parse(String(init?.body)));
+        return {
+          ok: true,
+          json: async () => ({
+            reply: "Do you have any final remarks?",
+            control: {
+              role: "chair",
+              kind: "closing",
+              topicId: "closing",
+              topicCategory: "closing",
+              followUpDepth: 0,
+              issuedAtMs: 4_000,
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ saved: 1 }) };
+    }));
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    const mounted = mountInterview(onElapsed);
+    await act(async () => mounted.interview.connect());
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    expect(mounted.interview.state).toBe("text");
+    ws.send.mockClear();
+
+    await act(async () => vi.advanceTimersByTimeAsync(4_000));
+    await act(async () => mounted.interview.sendText("My final answer"));
+
+    expect(onElapsed).toHaveBeenCalledTimes(4);
+    expect(textRequests).toEqual([{ text: "My final answer", role: "chair", atMs: 4_000 }]);
+    expect(ws.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)))
+      .filter((payload) => payload.type === "response.create")).toHaveLength(0);
+    act(() => mounted.root.unmount());
+  });
+
+  it("restarts the interview clock when exhausted reconnects fall back to text", async () => {
+    vi.useFakeTimers();
+    const onElapsed = vi.fn(() => "technical" as const);
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/realtime/session") return sessionResponse();
+      return { ok: true, json: async () => ({ saved: 1 }) };
+    }));
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    const mounted = mountInterview(onElapsed);
+    await act(async () => mounted.interview.connect());
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+
+    act(() => {
+      ws.onclose?.({ reason: "network-1" } as CloseEvent);
+      ws.onclose?.({ reason: "network-2" } as CloseEvent);
+      ws.onclose?.({ reason: "network-3" } as CloseEvent);
+    });
+    expect(mounted.interview.state).toBe("text");
+    onElapsed.mockClear();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+    expect(onElapsed).toHaveBeenCalledWith(1_000);
     act(() => mounted.root.unmount());
   });
 

@@ -93,6 +93,9 @@ export const interviewEvents = sqliteTable("interview_events", {
   uniqueIndex("interview_events_research_initial_claim_unique")
     .on(table.interviewId, table.type)
     .where(sql`${table.type} = 'research_initial_claim'`),
+  uniqueIndex("interview_events_core_question_claim_unique")
+    .on(table.interviewId, table.type)
+    .where(sql`${table.type} IN ('technical_question_claim', 'english_question_claim')`),
 ]);
 
 export const reviewReports = sqliteTable("review_reports", {

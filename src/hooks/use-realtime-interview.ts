@@ -14,6 +14,8 @@ type Role = "chair" | "technical" | "research" | "english";
 type Transcript = { role: Role | "candidate"; text: string; atMs: number; interrupted?: boolean };
 const ROLE_LABEL: Record<Role, string> = { chair: "主考官", technical: "专业基础老师", research: "科研项目导师", english: "英语老师" };
 
+type PendingControl = { id: string; control: QuestionControl };
+
 function isCoreRole(role: Role): role is CoreInterviewRole {
   return role === "technical" || role === "research" || role === "english";
 }
@@ -35,8 +37,11 @@ function instructionForControl(control: QuestionControl, research?: string) {
   if (control.kind === "closing") {
     return "现在由【主考官】进入最后收尾，只问一个简短总结或补充问题。";
   }
-  if (control.role === "english" && control.questionText) {
+  if (control.role === "english" && control.kind === "new_topic" && control.questionText) {
     return `现在由【英语老师】用英语逐字询问这一题，只问这一题，不得改成专业、论文、项目或技术问题：${control.questionText}`;
+  }
+  if (control.role === "english") {
+    return "现在由【英语老师】围绕候选人刚才的回答提出一个简短的非技术英语追问，只问一个问题；不得改成专业、论文、项目或技术问题；不得询问专业、课程、论文、项目、竞赛或技术细节。";
   }
   const mode = control.kind === "new_topic"
     ? `开始新的 ${control.topicCategory} 主题`
@@ -90,9 +95,11 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const drainPromise = useRef<Promise<void> | null>(null);
   const transcriptRef = useRef<Transcript[]>([]);
   const questionControls = useRef<QuestionControl[]>([]);
+  const pendingControl = useRef<PendingControl | null>(null);
   const interviewDuration = useRef<10 | 20 | 30>(20);
   const candidateSpeaking = useRef(false);
   const pendingRole = useRef<Role | null>(null);
+  const tickClock = useRef<() => void>(() => undefined);
   const lastCoreRole = useRef<CoreInterviewRole>("technical");
   const textMode = useRef(false);
   const reconnect = useRef<() => Promise<void>>(async () => undefined);
@@ -147,6 +154,21 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       if (index >= 0) eventQueue.current.splice(index, 1);
       throw reason;
     }
+    return String((envelope as { id: string }).id);
+  }, [drainEvents, enqueueEvent]);
+
+  const persistDelivery = useCallback(async (controlId: string) => {
+    const envelope = enqueueEvent({
+      type: "question_delivery",
+      payload: { controlId, deliveredAtMs: elapsedMs.current },
+    });
+    try {
+      await drainEvents();
+    } catch (reason) {
+      const index = eventQueue.current.indexOf(envelope);
+      if (index >= 0) eventQueue.current.splice(index, 1);
+      throw reason;
+    }
   }, [drainEvents, enqueueEvent]);
 
   const saveEvent = useCallback((event: unknown) => {
@@ -169,9 +191,8 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
 
   const enterTextMode = useCallback((message?: string) => {
     textMode.current = true;
-    if (timer.current) {
-      clearInterval(timer.current);
-      timer.current = null;
+    if (!timer.current) {
+      timer.current = setInterval(() => tickClock.current(), 1000);
     }
     setState("text");
     if (message) setError(message);
@@ -190,7 +211,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       ),
       controls: questionControls.current,
     });
-    await persistControl(control);
+    const controlId = await persistControl(control);
     questionControls.current.push(control);
 
     if (textMode.current) return;
@@ -202,7 +223,8 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       type: "response.create",
       response: { instructions: instructionForControl(control, roleInstructions.current.research) },
     }));
-  }, [persistControl, stopAudio]);
+    await persistDelivery(controlId);
+  }, [persistControl, persistDelivery, stopAudio]);
 
   const handoffToRole = useCallback((role: Role) => {
     const previous = lastRole.current;
@@ -226,6 +248,18 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       });
     }
   }, [issueNextQuestion, saveEvent]);
+
+  tickClock.current = () => {
+    elapsedMs.current += 1000;
+    const role = onElapsed(1000);
+    if (role === lastRole.current) return;
+    if (candidateSpeaking.current) {
+      pendingRole.current = role;
+      return;
+    }
+    handoffToRole(role);
+  };
+
   const playAudio = useCallback((encoded: string) => {
     const context = audio.current;
     if (!context) return;
@@ -254,6 +288,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const beginSession = useCallback(() => {
     if (sessionStarted.current || !sessionReady.current || !micPermissionSettled.current) return;
     sessionStarted.current = true;
+    if (!timer.current) timer.current = setInterval(() => tickClock.current(), 1000);
     if (!micAvailable.current) {
       enterTextMode();
       saveEvent({ type: "connection", payload: { state: "text-fallback", atMs: elapsedMs.current } });
@@ -265,7 +300,31 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     const ws = socket.current;
     if (ws?.readyState === WebSocket.OPEN) {
       const hasClosing = questionControls.current.some((control) => control.kind === "closing");
-      if (elapsedMs.current === 0) {
+      const pending = pendingControl.current;
+      if (pending) {
+        lastRole.current = pending.control.role;
+        if (isCoreRole(pending.control.role)) lastCoreRole.current = pending.control.role;
+        stopAudio();
+        try {
+          ws.send(JSON.stringify({ type: "response.cancel" }));
+          ws.send(JSON.stringify({
+            type: "response.create",
+            response: {
+              instructions: instructionForControl(
+                pending.control,
+                roleInstructions.current.research,
+              ),
+            },
+          }));
+          void persistDelivery(pending.id).then(() => {
+            if (pendingControl.current?.id === pending.id) pendingControl.current = null;
+          }).catch((reason) => {
+            setError(reason instanceof Error ? reason.message : "问题送达状态保存失败");
+          });
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : "问题重发失败");
+        }
+      } else if (elapsedMs.current === 0) {
         ws.send(JSON.stringify({
           type: "response.create",
           response: { instructions: "你是主考官。现在正式开场，先简短问候，再只问一个自我介绍问题。" },
@@ -290,18 +349,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
         }));
       }
     }
-    if (!timer.current) timer.current = setInterval(() => {
-      if (textMode.current) return;
-      elapsedMs.current += 1000;
-      const role = onElapsed(1000);
-      if (role === lastRole.current) return;
-      if (candidateSpeaking.current) {
-        pendingRole.current = role;
-        return;
-      }
-      handoffToRole(role);
-    }, 1000);
-  }, [enterTextMode, handoffToRole, issueNextQuestion, onElapsed, saveEvent]);
+  }, [enterTextMode, handoffToRole, issueNextQuestion, onElapsed, persistDelivery, saveEvent, stopAudio]);
   const handleMessage = useCallback((event: MessageEvent) => {
     let raw: unknown;
     try { raw = JSON.parse(String(event.data)); } catch { return; }
@@ -366,6 +414,13 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
         questionControls.current,
         session.questionControls,
       );
+    }
+    if (session.pendingControl
+      && typeof session.pendingControl.id === "string"
+      && session.pendingControl.control) {
+      pendingControl.current = session.pendingControl as PendingControl;
+    } else {
+      pendingControl.current = null;
     }
     const context = new AudioContext();
     audio.current = context;
@@ -472,6 +527,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     transcriptRef.current = [];
     eventQueue.current = [];
     questionControls.current = [];
+    pendingControl.current = null;
     interviewDuration.current = 20;
     candidateSpeaking.current = false;
     pendingRole.current = null;

@@ -36,7 +36,6 @@ const englishBoundary = [
   "Ask one short English follow-up about feelings, personal growth, teamwork, motivation, planning, or daily communication.",
   "Do not ask about courses, papers, projects, competitions, algorithms, experiments, or technical details.",
 ].join("\n");
-const researchClaimType = "research_initial_claim";
 const researchClaimLeaseMs = 120_000;
 const researchClaimWaitMs = 2_000;
 const researchClaimPollMs = 20;
@@ -44,6 +43,9 @@ const researchClaimPollMs = 20;
 type ResearchClaimPayload = { status: "pending" | "completed"; leaseUntil: number | null };
 type ResearchClaimResult = { status: "owner"; claimId: string } | { status: "busy" };
 type RecentEvent = typeof interviewEvents.$inferSelect;
+function questionClaimType(role: "technical" | "research" | "english") {
+  return role === "research" ? "research_initial_claim" : `${role}_question_claim`;
+}
 
 function readResearchClaim(payload: unknown): ResearchClaimPayload | undefined {
   if (!payload || typeof payload !== "object" || !("status" in payload)) return undefined;
@@ -55,20 +57,20 @@ function readResearchClaim(payload: unknown): ResearchClaimPayload | undefined {
   return { status, leaseUntil };
 }
 
-function pendingClaimCondition(interviewId: string, claimId: string) {
+function pendingClaimCondition(interviewId: string, claimId: string, claimType: string) {
   return and(
     eq(interviewEvents.id, claimId),
     eq(interviewEvents.interviewId, interviewId),
-    eq(interviewEvents.type, researchClaimType),
+    eq(interviewEvents.type, claimType),
     sql`json_extract(${interviewEvents.payload}, '$.status') = 'pending'`,
   );
 }
 
-async function releasePendingResearchClaim(interviewId: string, claimId: string) {
-  await db.delete(interviewEvents).where(pendingClaimCondition(interviewId, claimId));
+async function releasePendingResearchClaim(interviewId: string, claimId: string, claimType: string) {
+  await db.delete(interviewEvents).where(pendingClaimCondition(interviewId, claimId, claimType));
 }
 
-async function acquireResearchClaim(interviewId: string): Promise<ResearchClaimResult> {
+async function acquireResearchClaim(interviewId: string, claimType: string): Promise<ResearchClaimResult> {
   const deadline = Date.now() + researchClaimWaitMs;
   while (true) {
     const now = Date.now();
@@ -76,7 +78,7 @@ async function acquireResearchClaim(interviewId: string): Promise<ResearchClaimR
     const inserted = await db.insert(interviewEvents).values({
       id: claimId,
       interviewId,
-      type: researchClaimType,
+      type: claimType,
       payload: { status: "pending", leaseUntil: now + researchClaimLeaseMs },
       createdAt: now,
     }).onConflictDoNothing().returning({ id: interviewEvents.id });
@@ -84,21 +86,21 @@ async function acquireResearchClaim(interviewId: string): Promise<ResearchClaimR
 
     const [existing] = await db.select().from(interviewEvents).where(and(
       eq(interviewEvents.interviewId, interviewId),
-      eq(interviewEvents.type, researchClaimType),
+      eq(interviewEvents.type, claimType),
     )).limit(1);
     const claim = existing ? readResearchClaim(existing.payload) : undefined;
     if (existing && claim?.status === "completed") {
       const deleted = await db.delete(interviewEvents).where(and(
         eq(interviewEvents.id, existing.id),
         eq(interviewEvents.interviewId, interviewId),
-        eq(interviewEvents.type, researchClaimType),
+        eq(interviewEvents.type, claimType),
         sql`json_extract(${interviewEvents.payload}, '$.status') = 'completed'`,
       )).returning({ id: interviewEvents.id });
       if (deleted.length === 1) continue;
     }
     if (existing && claim?.status === "pending" && (claim.leaseUntil ?? 0) <= now) {
       const deleted = await db.delete(interviewEvents).where(and(
-        pendingClaimCondition(interviewId, existing.id),
+        pendingClaimCondition(interviewId, existing.id, claimType),
         sql`CAST(json_extract(${interviewEvents.payload}, '$.leaseUntil') AS INTEGER) <= ${now}`,
       )).returning({ id: interviewEvents.id });
       if (deleted.length === 1) continue;
@@ -183,10 +185,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     let claimId: string | undefined;
-    if (input.role === "research") {
-      const claim = await acquireResearchClaim(id);
+    let claimType: string | undefined;
+    if (input.role !== "chair") {
+      claimType = questionClaimType(input.role);
+      const claim = await acquireResearchClaim(id, claimType);
       if (claim.status === "busy") {
-        return NextResponse.json({ error: "科研问题正在生成，请稍后重试" }, { status: 409 });
+        return NextResponse.json({ error: "面试问题正在生成，请稍后重试" }, { status: 409 });
       }
       claimId = claim.claimId;
     }
@@ -324,11 +328,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             createdAt: now + 2,
           },
         ]);
-        if (claimId) {
+        if (claimId && claimType) {
           const released = await tx.delete(interviewEvents)
-            .where(pendingClaimCondition(id, claimId))
+            .where(pendingClaimCondition(id, claimId, claimType))
             .returning({ id: interviewEvents.id });
-          if (released.length !== 1) throw new Error("科研问题锁所有权已失效，请重试");
+          if (released.length !== 1) throw new Error("问题调度锁所有权已失效，请重试");
         }
         if (interview.status === "ready") {
           await tx.update(interviews).set({ status: "active", startedAt: now })
@@ -337,7 +341,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       });
       return NextResponse.json({ reply, control: validatedControl });
     } catch (error) {
-      if (claimId) await releasePendingResearchClaim(id, claimId);
+      if (claimId && claimType) await releasePendingResearchClaim(id, claimId, claimType);
       throw error;
     }
   } catch (error) {

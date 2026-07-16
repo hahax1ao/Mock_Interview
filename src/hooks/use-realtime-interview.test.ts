@@ -165,6 +165,56 @@ describe("realtime connection setup", () => {
     act(() => root.unmount());
   });
 
+  it("uses a non-technical follow-up instruction instead of repeating the English main question", async () => {
+    vi.useFakeTimers();
+    const mainQuestion = "Introduce your hometown briefly.";
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/realtime/session") {
+        return sessionResponse({
+          duration: 10,
+          questionControls: [{
+            role: "english",
+            kind: "new_topic",
+            topicId: "english-hometown",
+            topicCategory: "personal",
+            questionId: "english-hometown",
+            questionText: mainQuestion,
+            followUpDepth: 0,
+            issuedAtMs: 100,
+          }],
+        });
+      }
+      return { ok: true, json: async () => ({ saved: 1 }) };
+    });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    let interview: ReturnType<typeof useRealtimeInterview> | null = null;
+    function Harness() {
+      interview = useRealtimeInterview("interview-1", () => "english");
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(React.createElement(Harness)));
+    await act(async () => interview!.connect());
+    const ws = FakeWebSocket.instance!;
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+    const instruction = sentMessages(ws)
+      .filter((message) => message.type === "response.create")
+      .at(-1).response.instructions;
+    expect(instruction).not.toContain(mainQuestion);
+    expect(instruction).toContain("围绕候选人刚才的回答提出一个简短的非技术英语追问");
+    expect(instruction).toContain("不得询问专业、课程、论文、项目、竞赛或技术细节");
+    act(() => root.unmount());
+  });
+
   it("persists the next control after a candidate transcript before requesting the question", async () => {
     vi.useFakeTimers();
     const order: string[] = [];

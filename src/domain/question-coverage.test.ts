@@ -3,6 +3,7 @@ import {
   decideNextQuestion,
   rebuildCoverageState,
   topicTargetsForDuration,
+  type QuestionControl,
 } from "./question-coverage";
 
 describe("question coverage", () => {
@@ -84,5 +85,41 @@ describe("question coverage", () => {
     ]);
     expect(state.topicCounts.english).toBe(1);
     expect(state.usedEnglishQuestionIds).toEqual(["english-hometown"]);
+  });
+
+  it("deduplicates new topics by role and uses the English question id as its identity", () => {
+    const state = rebuildCoverageState([
+      { role: "technical", kind: "new_topic", topicId: "signals", topicCategory: "signals", followUpDepth: 0, issuedAtMs: 1 },
+      { role: "technical", kind: "new_topic", topicId: "signals", topicCategory: "signals", followUpDepth: 0, issuedAtMs: 2 },
+      {
+        role: "english", kind: "new_topic", topicId: "legacy-alias", topicCategory: "personal",
+        questionId: "english-hometown", questionText: "Introduce your hometown briefly.",
+        followUpDepth: 0, issuedAtMs: 3,
+      },
+      {
+        role: "english", kind: "new_topic", topicId: "english-hometown", topicCategory: "personal",
+        questionId: "english-hometown", questionText: "Introduce your hometown briefly.",
+        followUpDepth: 0, issuedAtMs: 4,
+      },
+    ]);
+    expect(state.topicCounts).toEqual({ technical: 1, research: 0, english: 1 });
+    expect(state.usedTopicIds.technical).toEqual(["signals"]);
+    expect(state.usedTopicIds.english).toEqual(["english-hometown"]);
+    expect(state.usedEnglishQuestionIds).toEqual(["english-hometown"]);
+  });
+
+  it("does not mark an already-used topic as new when the deterministic pool is exhausted", () => {
+    const topics = ["signals", "communications", "digital", "analog", "circuits", "probability"];
+    const controls: QuestionControl[] = topics.map((topicId, index) => ({
+      role: "technical" as const, kind: "new_topic" as const, topicId, topicCategory: topicId,
+      followUpDepth: 0, issuedAtMs: index,
+    }));
+    controls.push({ ...controls.at(-1)!, kind: "follow_up", followUpDepth: 3, issuedAtMs: 10 });
+    const next = decideNextQuestion({
+      duration: 30, role: "technical", elapsedMs: 1_000, moduleRemainingMs: 60_000, controls,
+    });
+    expect(next.kind).toBe("follow_up");
+    expect(next.topicId).toBe("probability");
+    expect(next.followUpDepth).toBe(3);
   });
 });

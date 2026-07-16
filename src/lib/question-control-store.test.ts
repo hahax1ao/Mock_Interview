@@ -66,6 +66,14 @@ describe("question-control store", () => {
     ]);
   });
 
+  it("uses id as a stable secondary order for controls created in the same millisecond", async () => {
+    await db.insert(interviewEvents).values([
+      { id: "00000000-0000-4000-8000-000000000002", interviewId, type: "question_control", payload: secondControl, createdAt: 100 },
+      { id: "00000000-0000-4000-8000-000000000001", interviewId, type: "question_control", payload: firstControl, createdAt: 100 },
+    ]);
+    await expect(loadQuestionControls(interviewId)).resolves.toEqual([firstControl, secondControl]);
+  });
+
   it("persists a validated control", async () => {
     await saveQuestionControl(interviewId, firstControl);
 

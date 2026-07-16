@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InterviewEventSchema, ReviewEntrySchema } from "./schemas";
+import { InterviewEventSchema, QuestionControlSchema, ReviewEntrySchema } from "./schemas";
 
 describe("interview event validation", () => {
   it("accepts a validated question-control event", () => {
@@ -16,6 +16,36 @@ describe("interview event validation", () => {
         issuedAtMs: 1000,
       },
     }).type).toBe("question_control");
+  });
+
+  it.each([
+    { role: "technical", kind: "closing", topicId: "closing", topicCategory: "closing", followUpDepth: 0, issuedAtMs: 1 },
+    { role: "chair", kind: "new_topic", topicId: "chair", topicCategory: "chair", followUpDepth: 0, issuedAtMs: 1 },
+    { role: "english", kind: "new_topic", topicId: "english-hometown", topicCategory: "personal", followUpDepth: 0, issuedAtMs: 1 },
+    {
+      role: "english", kind: "follow_up", topicId: "english-hometown", topicCategory: "personal",
+      questionId: "english-hometown", questionText: "Introduce your hometown briefly.", followUpDepth: 0, issuedAtMs: 1,
+    },
+    { role: "technical", kind: "new_topic", topicId: "signals", topicCategory: "signals", followUpDepth: 1, issuedAtMs: 1 },
+  ])("rejects invalid question-control role, kind, and depth combinations", (control) => {
+    expect(QuestionControlSchema.safeParse(control).success).toBe(false);
+  });
+
+  it("accepts a depth-three non-chair follow-up", () => {
+    expect(QuestionControlSchema.safeParse({
+      role: "technical", kind: "follow_up", topicId: "signals", topicCategory: "signals",
+      followUpDepth: 3, issuedAtMs: 1,
+    }).success).toBe(true);
+  });
+
+  it("accepts a validated question-delivery event", () => {
+    expect(InterviewEventSchema.parse({
+      type: "question_delivery",
+      payload: {
+        controlId: "00000000-0000-4000-8000-000000000301",
+        deliveredAtMs: 101,
+      },
+    }).type).toBe("question_delivery");
   });
 });
 

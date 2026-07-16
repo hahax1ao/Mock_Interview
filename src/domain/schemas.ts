@@ -41,11 +41,34 @@ export const QuestionControlSchema = z.object({
   questionText: z.string().min(1).optional(),
   followUpDepth: z.number().int().min(0).max(3),
   issuedAtMs: z.number().nonnegative(),
+}).superRefine((control, context) => {
+  const invalid = (message: string) => context.addIssue({ code: "custom", message });
+  if (control.kind === "closing") {
+    if (control.role !== "chair") invalid("closing controls require the chair role");
+    if (control.followUpDepth !== 0) invalid("closing controls require depth zero");
+    return;
+  }
+  if (control.role === "chair") invalid("non-closing controls cannot use the chair role");
+  if (control.kind === "new_topic") {
+    if (control.followUpDepth !== 0) invalid("new topics require depth zero");
+    if (control.role === "english" && (!control.questionId || !control.questionText)) {
+      invalid("English new topics require a question id and text");
+    }
+  }
+  if (control.kind === "follow_up" && (control.followUpDepth < 1 || control.followUpDepth > 3)) {
+    invalid("follow-ups require depth one through three");
+  }
+});
+
+export const QuestionDeliverySchema = z.object({
+  controlId: z.string().uuid(),
+  deliveredAtMs: z.number().nonnegative(),
 });
 
 export const InterviewEventSchema = z.discriminatedUnion("type", [
   z.object({ id: z.string().uuid().optional(), type: z.literal("transcript"), payload: TranscriptTurnSchema }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("question_control"), payload: QuestionControlSchema }),
+  z.object({ id: z.string().uuid().optional(), type: z.literal("question_delivery"), payload: QuestionDeliverySchema }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("handoff"), payload: z.object({ from: InterviewRoleSchema, to: InterviewRoleSchema, atMs: z.number() }) }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("interruption"), payload: z.object({ atMs: z.number(), role: InterviewRoleSchema }) }),
   z.object({ id: z.string().uuid().optional(), type: z.literal("connection"), payload: z.object({ state: z.enum(["connected", "disconnected", "reconnecting", "text-fallback"]), atMs: z.number() }) }),

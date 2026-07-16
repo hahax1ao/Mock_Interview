@@ -55,9 +55,19 @@ export function topicTargetsForDuration(duration: 10 | 20 | 30) {
 }
 
 export function rebuildCoverageState(controls: QuestionControl[]): CoverageState {
-  const newTopics = controls.filter((control) => control.kind === "new_topic");
+  const identities = new Set<string>();
+  const newTopics = controls.filter((control) => {
+    if (control.kind !== "new_topic" || control.role === "chair") return false;
+    const topicId = control.role === "english" ? (control.questionId ?? control.topicId) : control.topicId;
+    const identity = `${control.role}:${topicId}`;
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+    return true;
+  });
   const idsFor = (role: CoreInterviewRole) =>
-    newTopics.filter((control) => control.role === role).map((control) => control.topicId);
+    newTopics.filter((control) => control.role === role).map((control) =>
+      role === "english" ? (control.questionId ?? control.topicId) : control.topicId,
+    );
   const english = newTopics.filter((control) => control.role === "english");
   return {
     topicCounts: {
@@ -84,12 +94,13 @@ function createNewTopic(
   role: CoreInterviewRole,
   state: CoverageState,
   elapsedMs: number,
-): QuestionControl {
+): QuestionControl | undefined {
   if (role === "english") {
     const question = selectEnglishQuestion(
       state.usedEnglishQuestionIds,
       state.usedEnglishCategories,
     );
+    if (state.usedEnglishQuestionIds.includes(question.id)) return undefined;
     return {
       role,
       kind: "new_topic",
@@ -103,7 +114,8 @@ function createNewTopic(
   }
 
   const topics = role === "technical" ? TECHNICAL_TOPICS : RESEARCH_TOPICS;
-  const topicId = topics.find((topic) => !state.usedTopicIds[role].includes(topic)) ?? topics[0];
+  const topicId = topics.find((topic) => !state.usedTopicIds[role].includes(topic));
+  if (!topicId) return undefined;
   return {
     role,
     kind: "new_topic",
@@ -132,7 +144,16 @@ export function decideNextQuestion(input: DecideNextQuestionInput): QuestionCont
   const current = controls.findLast((control) => control.role === role);
 
   if (state.topicCounts[role] < target || !current || current.followUpDepth >= 3) {
-    return createNewTopic(role, state, elapsedMs);
+    const newTopic = createNewTopic(role, state, elapsedMs);
+    if (newTopic) return newTopic;
+    if (!current) throw new Error(`No unused ${role} topics remain`);
+    return {
+      ...current,
+      role,
+      kind: "follow_up",
+      followUpDepth: Math.min(3, Math.max(1, current.followUpDepth + 1)),
+      issuedAtMs: elapsedMs,
+    };
   }
 
   return {

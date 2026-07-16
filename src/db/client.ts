@@ -140,6 +140,7 @@ export function initDatabase() {
     await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS profile_experiences_draft_key_unique ON profile_experiences(material_id, type, normalized_key) WHERE status = 'draft' AND normalized_key IS NOT NULL");
     await reconcileResearchInitialClaims();
     await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS interview_events_research_initial_claim_unique ON interview_events(interview_id, type) WHERE type = 'research_initial_claim'");
+    await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS interview_events_core_question_claim_unique ON interview_events(interview_id, type) WHERE type IN ('technical_question_claim', 'english_question_claim')");
     await reconcileMaterialHashReservations();
     try {
       await cleanupMaterialTrash(storageRoot);

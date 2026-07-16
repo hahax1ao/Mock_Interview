@@ -250,6 +250,43 @@ describe("POST text interview scheduled questions", () => {
     expect(buildResearchHandoffInstruction).not.toHaveBeenCalled();
   });
 
+  it("serializes concurrent technical scheduling against the latest coverage state", async () => {
+    const id = await createInterview(10);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    createCompletion.mockImplementation(async () => {
+      await gate;
+      return { choices: [{ message: { content: "next technical question" } }] };
+    });
+
+    const requests = [
+      postText(id, { text: "answer one", role: "technical", atMs: 100 }),
+      postText(id, { text: "answer two", role: "technical", atMs: 101 }),
+    ];
+    await vi.waitFor(() => expect(createCompletion).toHaveBeenCalled());
+    release();
+    const responses = await Promise.all(requests);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(bodies.filter(({ control }) => control.kind === "new_topic")).toHaveLength(1);
+    expect(bodies.filter(({ control }) => control.kind === "follow_up")).toHaveLength(1);
+    const events = await db.select().from(interviewEvents)
+      .where(eq(interviewEvents.interviewId, id));
+    const controls = events
+      .filter(({ type, payload }) =>
+        type === "question_control"
+        && payload && typeof payload === "object"
+        && "role" in payload && payload.role === "technical",
+      )
+      .map(({ payload }) => payload as QuestionControl);
+    expect(controls).toHaveLength(2);
+    expect(controls.filter(({ kind }) => kind === "new_topic")).toHaveLength(1);
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "technical_question_claim",
+    }));
+  });
+
   it("does not include detailed project context in the English system message", async () => {
     const id = await createInterview(10);
     await seedControl(id, {

@@ -112,4 +112,83 @@ describe("POST realtime session route", () => {
     expect(body.duration).toBe(20);
     expect(body.questionControls).toEqual([control]);
   });
+
+  it("returns the latest persisted control as pending when it has no delivery or interviewer transcript", async () => {
+    const interviewId = await createInterviewFixture(false);
+    const controlId = "00000000-0000-4000-8000-000000000301";
+    const control: QuestionControl = {
+      role: "english",
+      kind: "new_topic",
+      topicId: "english-hometown",
+      topicCategory: "personal",
+      questionId: "english-hometown",
+      questionText: "Introduce your hometown briefly.",
+      followUpDepth: 0,
+      issuedAtMs: 100,
+    };
+    await db.insert(interviewEvents).values({
+      id: controlId,
+      interviewId,
+      type: "question_control",
+      payload: control,
+      createdAt: 100,
+    });
+
+    const response = await POST(request(interviewId));
+    const body = await response.json();
+
+    expect(body.pendingControl).toEqual({ id: controlId, control });
+  });
+
+  it.each(["question_delivery", "transcript"])(
+    "does not return an already delivered control when a later %s exists",
+    async (confirmationType) => {
+      const interviewId = await createInterviewFixture(false);
+      const controlId = crypto.randomUUID();
+      const control: QuestionControl = {
+        role: "technical",
+        kind: "new_topic",
+        topicId: "signals",
+        topicCategory: "signals",
+        followUpDepth: 0,
+        issuedAtMs: 100,
+      };
+      await db.insert(interviewEvents).values([
+        {
+          id: controlId,
+          interviewId,
+          type: "question_control",
+          payload: control,
+          createdAt: 100,
+        },
+        confirmationType === "question_delivery"
+          ? {
+            id: crypto.randomUUID(),
+            interviewId,
+            type: "question_delivery",
+            payload: { controlId, deliveredAtMs: 101 },
+            createdAt: 101,
+          }
+          : {
+            id: crypto.randomUUID(),
+            interviewId,
+            type: "transcript",
+            payload: {
+              role: "technical",
+              startedAtMs: 101,
+              endedAtMs: 101,
+              text: "What is the sampling theorem?",
+              confidence: 1,
+              interrupted: false,
+            },
+            createdAt: 101,
+          },
+      ]);
+
+      const response = await POST(request(interviewId));
+      const body = await response.json();
+
+      expect(body.pendingControl).toBeUndefined();
+    },
+  );
 });
