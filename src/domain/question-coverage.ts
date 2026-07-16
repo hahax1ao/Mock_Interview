@@ -6,7 +6,7 @@ import {
 export type CoreInterviewRole = "technical" | "research" | "english";
 export type QuestionControl = {
   role: CoreInterviewRole | "chair";
-  kind: "new_topic" | "follow_up" | "closing";
+  kind: "new_topic" | "follow_up" | "closing" | "exhausted";
   topicId: string;
   topicCategory: string;
   questionId?: string;
@@ -150,8 +150,7 @@ export function decideNextQuestion(input: DecideNextQuestionInput): QuestionCont
     return {
       ...current,
       role,
-      kind: "follow_up",
-      followUpDepth: Math.min(3, Math.max(1, current.followUpDepth + 1)),
+      kind: "exhausted",
       issuedAtMs: elapsedMs,
     };
   }

@@ -34,7 +34,7 @@ export type TranscriptTurn = z.infer<typeof TranscriptTurnSchema>;
 
 export const QuestionControlSchema = z.object({
   role: z.enum(["chair", "technical", "research", "english"]),
-  kind: z.enum(["new_topic", "follow_up", "closing"]),
+  kind: z.enum(["new_topic", "follow_up", "closing", "exhausted"]),
   topicId: z.string().min(1),
   topicCategory: z.string().min(1),
   questionId: z.string().min(1).optional(),
@@ -46,6 +46,11 @@ export const QuestionControlSchema = z.object({
   if (control.kind === "closing") {
     if (control.role !== "chair") invalid("closing controls require the chair role");
     if (control.followUpDepth !== 0) invalid("closing controls require depth zero");
+    return;
+  }
+  if (control.kind === "exhausted") {
+    if (control.role === "chair") invalid("exhausted controls require a core role");
+    if (control.followUpDepth !== 3) invalid("exhausted controls require capped depth three");
     return;
   }
   if (control.role === "chair") invalid("non-closing controls cannot use the chair role");

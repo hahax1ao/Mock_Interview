@@ -257,6 +257,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
           reply = fallback.text;
         }
+      } else if (control.kind === "exhausted") {
+        reply = "This interview module is completed; please wait for the next section.";
       } else if (control.kind === "closing") {
         reply = await createModelQuestion([
           {

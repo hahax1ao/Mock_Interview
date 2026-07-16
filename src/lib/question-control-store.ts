@@ -55,7 +55,11 @@ export async function loadQuestionControlSessionState(interviewId: string): Prom
   });
   return {
     controls: controlRows.map(({ control }) => control),
-    ...(!delivered && !hasInterviewerTranscript ? { pendingControl: lastControl } : {}),
+    ...(!delivered
+      && !hasInterviewerTranscript
+      && lastControl.control.kind !== "exhausted"
+      ? { pendingControl: lastControl }
+      : {}),
   };
 }
 

@@ -388,6 +388,45 @@ describe("POST text interview scheduled questions", () => {
     expect(englishQuestionBank.map(({ text }) => text)).toContain(body.reply);
   });
 
+  it("stops safely when every technical topic is exhausted at maximum follow-up depth", async () => {
+    const id = await createInterview(30);
+    const topics = ["signals", "communications", "digital", "analog", "circuits", "probability"];
+    for (const [index, topic] of topics.entries()) {
+      await seedControl(id, {
+        role: "technical",
+        kind: "new_topic",
+        topicId: topic,
+        topicCategory: topic,
+        followUpDepth: 0,
+        issuedAtMs: index + 1,
+      });
+    }
+    await seedControl(id, {
+      role: "technical",
+      kind: "follow_up",
+      topicId: "probability",
+      topicCategory: "probability",
+      followUpDepth: 3,
+      issuedAtMs: 10,
+    });
+
+    const response = await postText(id, {
+      role: "technical",
+      text: "That completes my answer.",
+      atMs: 20,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.control).toEqual(expect.objectContaining({
+      role: "technical",
+      kind: "exhausted",
+      followUpDepth: 3,
+    }));
+    expect(body.reply).toContain("completed");
+    expect(createCompletion).not.toHaveBeenCalled();
+  });
+
   it("uses a short chair prompt for a closing decision", async () => {
     const id = await createInterview(10);
     createCompletion.mockResolvedValueOnce({

@@ -196,7 +196,7 @@ describe("realtime async lifecycle", () => {
     act(() => mounted.root.unmount());
   });
 
-  it("resends the same persisted control after response.create throws and a reconnect rebuilds the page state", async () => {
+  it("resends a persisted control until response.created confirms delivery", async () => {
     vi.useFakeTimers();
     const savedEvents: Array<{ id: string; type: string; payload: Record<string, unknown> }> = [];
     let sessionRequests = 0;
@@ -204,11 +204,16 @@ describe("realtime async lifecycle", () => {
       if (String(input) === "/api/realtime/session") {
         sessionRequests += 1;
         const savedControl = savedEvents.findLast(({ type }) => type === "question_control");
+        const delivered = savedControl && savedEvents.some(({ type, payload }) =>
+          type === "question_delivery" && payload.controlId === savedControl.id,
+        );
         return sessionResponse(sessionRequests === 1 || !savedControl
           ? {}
           : {
             questionControls: [savedControl.payload],
-            pendingControl: { id: savedControl.id, control: savedControl.payload },
+            ...(!delivered ? {
+              pendingControl: { id: savedControl.id, control: savedControl.payload },
+            } : {}),
           });
       }
       const events = JSON.parse(String(init?.body)).events;
@@ -229,10 +234,7 @@ describe("realtime async lifecycle", () => {
     let attemptedInstruction = "";
     first.send.mockImplementation((payload) => {
       const message = JSON.parse(String(payload));
-      if (message.type === "response.create") {
-        attemptedInstruction = message.response.instructions;
-        throw new Error("socket closed during send");
-      }
+      if (message.type === "response.create") attemptedInstruction = message.response.instructions;
     });
 
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
@@ -240,6 +242,7 @@ describe("realtime async lifecycle", () => {
     expect(attemptedInstruction).toContain("开始新的 signals 主题");
 
     act(() => first.onclose?.({ reason: "network" } as CloseEvent));
+    expect(savedEvents.filter(({ type }) => type === "question_delivery")).toHaveLength(0);
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
     const second = FakeWebSocket.instances[1];
     act(() => second.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
@@ -251,12 +254,23 @@ describe("realtime async lifecycle", () => {
       .at(-1).response.instructions;
     expect(resentInstruction).toBe(attemptedInstruction);
     expect(savedEvents.filter(({ type }) => type === "question_control")).toHaveLength(1);
-    expect(savedEvents).toContainEqual(expect.objectContaining({
+    expect(savedEvents.filter(({ type }) => type === "question_delivery")).toHaveLength(0);
+    act(() => second.onmessage?.({ data: JSON.stringify({ type: "response.created" }) } as MessageEvent));
+    await vi.waitFor(() => expect(savedEvents).toContainEqual(expect.objectContaining({
       type: "question_delivery",
       payload: expect.objectContaining({
         controlId: savedEvents.find(({ type }) => type === "question_control")!.id,
       }),
-    }));
+    })));
+    act(() => second.onclose?.({ reason: "network-again" } as CloseEvent));
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    const third = FakeWebSocket.instances[2];
+    act(() => third.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    await act(async () => Promise.resolve());
+    const postConfirmationInstructions = third.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)))
+      .filter((message) => message.type === "response.create");
+    expect(postConfirmationInstructions.map((message) => message.response.instructions)).not.toContain(attemptedInstruction);
     act(() => mounted.root.unmount());
   });
 
@@ -413,6 +427,78 @@ describe("realtime async lifecycle", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
 
     expect(onElapsed).toHaveBeenCalledWith(1_000);
+    act(() => mounted.root.unmount());
+  });
+
+  it("shows and confirms the same pending question when realtime falls back to text", async () => {
+    vi.useFakeTimers();
+    const savedEvents: Array<{ id: string; type: string; payload: Record<string, unknown> }> = [];
+    const textBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/realtime/session") return sessionResponse({ duration: 10 });
+      if (String(input).endsWith("/text")) {
+        textBodies.push(JSON.parse(String(init?.body)));
+        return {
+          ok: true,
+          json: async () => ({
+            reply: "What did you like most about it?",
+            control: {
+              role: "english",
+              kind: "follow_up",
+              topicId: "english-hometown",
+              topicCategory: "personal",
+              questionId: "english-hometown",
+              questionText: "Introduce your hometown briefly.",
+              followUpDepth: 1,
+              issuedAtMs: 1_000,
+            },
+          }),
+        };
+      }
+      const events = JSON.parse(String(init?.body)).events;
+      savedEvents.push(...events);
+      return { ok: true, json: async () => ({ saved: events.length }) };
+    }));
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    const mounted = mountInterview(() => "english");
+    await act(async () => mounted.interview.connect());
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    const savedControl = savedEvents.find(({ type }) => type === "question_control")!;
+    expect(savedControl.payload).toMatchObject({
+      role: "english",
+      questionText: "Introduce your hometown briefly.",
+    });
+    expect(savedEvents.filter(({ type }) => type === "question_delivery")).toHaveLength(0);
+
+    act(() => {
+      ws.onclose?.({ reason: "network-1" } as CloseEvent);
+      ws.onclose?.({ reason: "network-2" } as CloseEvent);
+      ws.onclose?.({ reason: "network-3" } as CloseEvent);
+    });
+    await vi.waitFor(() => expect(mounted.interview.state).toBe("text"));
+    expect(mounted.interview.transcripts).toContainEqual(expect.objectContaining({
+      role: "english",
+      text: "Introduce your hometown briefly.",
+    }));
+    await vi.waitFor(() => expect(savedEvents).toContainEqual(expect.objectContaining({
+      type: "question_delivery",
+      payload: expect.objectContaining({ controlId: savedControl.id }),
+    })));
+
+    await act(async () => mounted.interview.sendText("It is peaceful and friendly."));
+    expect(textBodies).toContainEqual(expect.objectContaining({
+      role: "english",
+      text: "It is peaceful and friendly.",
+    }));
+    expect(mounted.interview.transcripts.filter(({ text }) =>
+      text === "Introduce your hometown briefly.")).toHaveLength(1);
     act(() => mounted.root.unmount());
   });
 

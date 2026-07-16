@@ -47,6 +47,13 @@ describe("interview event validation", () => {
       },
     }).type).toBe("question_delivery");
   });
+
+  it("accepts an exhausted non-chair control at capped depth", () => {
+    expect(QuestionControlSchema.safeParse({
+      role: "technical", kind: "exhausted", topicId: "probability", topicCategory: "probability",
+      followUpDepth: 3, issuedAtMs: 1,
+    }).success).toBe(true);
+  });
 });
 
 describe("review output normalization", () => {

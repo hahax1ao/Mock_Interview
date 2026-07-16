@@ -105,3 +105,42 @@ Playwright emitted only the existing `NO_COLOR`/`FORCE_COLOR` environment warnin
 
 - Delivery is intentionally at-least-once. If websocket send succeeds but persisting its delivery event fails before an interviewer transcript is saved, reconnect can conservatively resend the pending control. Once either delivery or transcript is persisted, it is not resent.
 - Existing files produce Git LF-to-CRLF normalization notices on Windows; `git diff --check` reports no whitespace errors.
+
+## Merge-prep follow-up
+
+Date: 2026-07-16
+
+### Confirmed realtime delivery
+
+- `response.create` websocket send no longer persists `question_delivery` by itself.
+- A pending control remains pending across disconnects until the upstream emits `response.created` or the first interviewer audio/transcript output arrives.
+- Reconnect resends the exact persisted instruction without creating a duplicate coverage control.
+- Delivery confirmation is serialized, and the event queue now drains events that arrive at the boundary of an already-running batch.
+
+### Text fallback delivery
+
+- When microphone access or repeated reconnects fall back to text, the same pending question is displayed once in transcripts.
+- Displaying the pending question is treated as delivery and persists `question_delivery`; `sendText` answers using that question's role.
+- Re-entering text mode does not duplicate the question or its confirmation.
+
+### Explicit pool exhaustion
+
+- Exhausted technical/research pools now return an explicit `exhausted` control at depth 3 instead of another `follow_up`.
+- Realtime stops issuing that control, session reconstruction never treats it as pending, and text mode returns a safe module-complete message without calling the model.
+
+### TDD evidence
+
+- RED: successful websocket send without `response.created` incorrectly saved delivery; text fallback saved delivery before showing the pending question; exhausted pools returned a fourth depth-3 follow-up.
+- GREEN: reconnect-until-confirmed, confirmed-no-same-resend, one-time text display/delivery, and explicit exhaustion tests all pass.
+
+### Verification
+
+- Focused affected suite: 7 files, 63 tests passed.
+- `npm test`: 40 files, 254 tests passed.
+- `npm run lint`: passed (`tsc --noEmit`).
+- `npm run build`: passed.
+- `npm run test:e2e`: 14 tests passed.
+- `git diff --check`: passed.
+- Privacy scan found no API key, private resume path, test contact data, tracked `.env.local`, tracked `test_thing`, or new tracked data file.
+
+Playwright emitted only the existing `NO_COLOR`/`FORCE_COLOR` environment warning. No real model request was made and no private resume was read.

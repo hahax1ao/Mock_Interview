@@ -34,6 +34,9 @@ function mergeQuestionControls(current: QuestionControl[], incoming: QuestionCon
 }
 
 function instructionForControl(control: QuestionControl, research?: string) {
+  if (control.kind === "exhausted") {
+    return "This interview module is complete. Do not ask another question; wait for the next role handoff.";
+  }
   if (control.kind === "closing") {
     return "现在由【主考官】进入最后收尾，只问一个简短总结或补充问题。";
   }
@@ -96,6 +99,8 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const transcriptRef = useRef<Transcript[]>([]);
   const questionControls = useRef<QuestionControl[]>([]);
   const pendingControl = useRef<PendingControl | null>(null);
+  const confirmingControlId = useRef<string | null>(null);
+  const textDeliveredControlIds = useRef(new Set<string>());
   const interviewDuration = useRef<10 | 20 | 30>(20);
   const candidateSpeaking = useRef(false);
   const pendingRole = useRef<Role | null>(null);
@@ -111,7 +116,10 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
 
   const drainEvents = useCallback(async () => {
     if (!interviewId) return;
-    if (drainPromise.current) return drainPromise.current;
+    while (drainPromise.current) {
+      await drainPromise.current;
+    }
+    if (!eventQueue.current.length) return;
     const run = (async () => {
       while (eventQueue.current.length) {
         const batch = eventQueue.current.slice(0, 50);
@@ -189,14 +197,43 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     nextPlayAt.current = audio.current?.currentTime ?? 0;
   }, []);
 
+  const confirmPendingDelivery = useCallback(async () => {
+    const pending = pendingControl.current;
+    if (!pending || confirmingControlId.current === pending.id) return;
+    confirmingControlId.current = pending.id;
+    try {
+      await persistDelivery(pending.id);
+      if (pendingControl.current?.id === pending.id) pendingControl.current = null;
+    } finally {
+      if (confirmingControlId.current === pending.id) confirmingControlId.current = null;
+    }
+  }, [persistDelivery]);
+
   const enterTextMode = useCallback((message?: string) => {
     textMode.current = true;
     if (!timer.current) {
       timer.current = setInterval(() => tickClock.current(), 1000);
     }
+    const pending = pendingControl.current;
+    if (pending && !textDeliveredControlIds.current.has(pending.id)) {
+      textDeliveredControlIds.current.add(pending.id);
+      lastRole.current = pending.control.role;
+      if (isCoreRole(pending.control.role)) lastCoreRole.current = pending.control.role;
+      const turn: Transcript = {
+        role: pending.control.role,
+        text: pending.control.questionText
+          ?? instructionForControl(pending.control, roleInstructions.current.research),
+        atMs: elapsedMs.current,
+      };
+      transcriptRef.current.push(turn);
+      setTranscripts((items) => [...items, turn]);
+      void confirmPendingDelivery().catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "Question delivery confirmation failed");
+      });
+    }
     setState("text");
     if (message) setError(message);
-  }, []);
+  }, [confirmPendingDelivery]);
 
   const issueNextQuestion = useCallback(async (role: CoreInterviewRole) => {
     if (textMode.current) return;
@@ -213,8 +250,13 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     });
     const controlId = await persistControl(control);
     questionControls.current.push(control);
+    if (control.kind === "exhausted") return;
 
-    if (textMode.current) return;
+    pendingControl.current = { id: controlId, control };
+    if (textMode.current) {
+      enterTextMode();
+      return;
+    }
     const current = socket.current;
     if (current?.readyState !== WebSocket.OPEN) return;
     stopAudio();
@@ -223,8 +265,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       type: "response.create",
       response: { instructions: instructionForControl(control, roleInstructions.current.research) },
     }));
-    await persistDelivery(controlId);
-  }, [persistControl, persistDelivery, stopAudio]);
+  }, [enterTextMode, persistControl, stopAudio]);
 
   const handoffToRole = useCallback((role: Role) => {
     const previous = lastRole.current;
@@ -316,11 +357,6 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
               ),
             },
           }));
-          void persistDelivery(pending.id).then(() => {
-            if (pendingControl.current?.id === pending.id) pendingControl.current = null;
-          }).catch((reason) => {
-            setError(reason instanceof Error ? reason.message : "问题送达状态保存失败");
-          });
         } catch (reason) {
           setError(reason instanceof Error ? reason.message : "问题重发失败");
         }
@@ -349,12 +385,22 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
         }));
       }
     }
-  }, [enterTextMode, handoffToRole, issueNextQuestion, onElapsed, persistDelivery, saveEvent, stopAudio]);
+  }, [enterTextMode, handoffToRole, issueNextQuestion, onElapsed, saveEvent, stopAudio]);
   const handleMessage = useCallback((event: MessageEvent) => {
     let raw: unknown;
     try { raw = JSON.parse(String(event.data)); } catch { return; }
     const parsed = parseRealtimeServerEvent(raw);
+    const confirmDelivery = () => {
+      void confirmPendingDelivery().catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "Question delivery confirmation failed");
+      });
+    };
+    if (raw && typeof raw === "object" && "type" in raw
+      && (raw as { type?: unknown }).type === "response.created") {
+      confirmDelivery();
+    }
     if (parsed.kind === "audio") {
+      confirmDelivery();
       reconnectAttempts.current = 0;
       playAudio(parsed.data);
     }
@@ -362,6 +408,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       if (textMode.current) return;
       const role = parsed.speaker === "candidate" ? "candidate" : lastRole.current;
       persistTranscript(role, parsed.text);
+      if (role !== "candidate") confirmDelivery();
       if (role === "candidate") {
         candidateSpeaking.current = false;
         const deferredRole = pendingRole.current;
@@ -385,7 +432,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       sessionReady.current = true;
       beginSession();
     }
-  }, [beginSession, handoffToRole, issueNextQuestion, persistTranscript, playAudio, stopAudio]);
+  }, [beginSession, confirmPendingDelivery, handoffToRole, issueNextQuestion, persistTranscript, playAudio, stopAudio]);
 
   const connect = useCallback(async () => {
     if (!interviewId) return;
@@ -528,6 +575,8 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     eventQueue.current = [];
     questionControls.current = [];
     pendingControl.current = null;
+    confirmingControlId.current = null;
+    textDeliveredControlIds.current.clear();
     interviewDuration.current = 20;
     candidateSpeaking.current = false;
     pendingRole.current = null;

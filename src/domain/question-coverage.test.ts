@@ -118,8 +118,7 @@ describe("question coverage", () => {
     const next = decideNextQuestion({
       duration: 30, role: "technical", elapsedMs: 1_000, moduleRemainingMs: 60_000, controls,
     });
-    expect(next.kind).toBe("follow_up");
+    expect(next.kind).toBe("exhausted");
     expect(next.topicId).toBe("probability");
-    expect(next.followUpDepth).toBe(3);
   });
 });
