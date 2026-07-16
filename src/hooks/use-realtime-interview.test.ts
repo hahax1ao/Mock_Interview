@@ -227,6 +227,7 @@ describe("realtime connection setup", () => {
     expect(order.indexOf("control-saved")).toBeLessThan(order.indexOf("question-sent"));
     act(() => root.unmount());
   });
+
   it("defers a timed handoff until the candidate transcript is complete", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
@@ -264,6 +265,61 @@ describe("realtime connection setup", () => {
     } as MessageEvent));
     await vi.waitFor(() => expect(sentMessages(ws)
       .some((message) => message.type === "response.create")).toBe(true));
+    act(() => root.unmount());
+  });
+
+  it("does not advance local coverage or send a question when control persistence exhausts retries", async () => {
+    vi.useFakeTimers();
+    let failedControlAttempts = 0;
+    const savedControls: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/realtime/session") return sessionResponse();
+      const events = JSON.parse(String(init?.body)).events;
+      if (events.some((event: { type: string }) => event.type === "question_control") && failedControlAttempts < 3) {
+        failedControlAttempts += 1;
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      for (const event of events) {
+        if (event.type === "question_control") savedControls.push(event.payload);
+      }
+      return { ok: true, json: async () => ({ saved: events.length }) };
+    });
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    let interview: ReturnType<typeof useRealtimeInterview> | null = null;
+    function Harness() {
+      interview = useRealtimeInterview("interview-1", () => "technical");
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(React.createElement(Harness)));
+    await act(async () => interview!.connect());
+    const ws = FakeWebSocket.instance!;
+    act(() => ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent));
+    ws.send.mockClear();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    await vi.waitFor(() => expect(failedControlAttempts).toBe(3));
+    expect(sentMessages(ws).some((message) => message.type === "response.create")).toBe(false);
+
+    act(() => ws.onmessage?.({
+      data: JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "Please try the question again.",
+      }),
+    } as MessageEvent));
+    await vi.waitFor(() => expect(sentMessages(ws)
+      .some((message) => message.type === "response.create")).toBe(true));
+    expect(savedControls.at(-1)).toMatchObject({
+      role: "technical",
+      kind: "new_topic",
+      topicId: "signals",
+    });
     act(() => root.unmount());
   });
 });
