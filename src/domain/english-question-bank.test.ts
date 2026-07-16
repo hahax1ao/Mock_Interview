@@ -38,6 +38,9 @@ describe("english question bank", () => {
     "Describe your software development skills?",
     "Tell me about your paper.",
     "Describe the technical details of your competition entry.",
+    "What experiment did you conduct?",
+    "Which competition did you join?",
+    "What research method did you use?",
   ])("rejects forbidden English prompt: %s", (text) => {
     expect(isForbiddenEnglishQuestion(text)).toBe(true);
   });
@@ -47,6 +50,8 @@ describe("english question bank", () => {
     "What role do you usually play in a team?",
     "Talk about your learning methods and how you learn English.",
     "What abilities help you work well with others?",
+    "What broad areas are you interested in exploring during postgraduate study?",
+    "What personal qualities would help you in future academic research?",
   ])("allows non-skill personal prompts: %s", (text) => {
     expect(isForbiddenEnglishQuestion(text)).toBe(false);
   });

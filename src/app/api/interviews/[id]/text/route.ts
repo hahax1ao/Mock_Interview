@@ -174,7 +174,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "场次不存在或已结束" }, { status: 409 });
     }
     const duration = interview.duration as 10 | 20 | 30;
-    const [recentDescending, controls, priorTranscripts] = await Promise.all([
+    const [recentDescending, loadedControls, priorTranscripts] = await Promise.all([
       db.select().from(interviewEvents)
         .where(eq(interviewEvents.interviewId, id))
         .orderBy(desc(interviewEvents.createdAt))
@@ -186,6 +186,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       )),
     ]);
     const recent = recentDescending.reverse();
+    let controls = loadedControls;
     const hasPriorResearchQuestion = priorTranscripts.some(({ payload }) =>
       payload && typeof payload === "object" && "role" in payload && payload.role === "research",
     );
@@ -210,7 +211,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (claim.status === "busy") {
         return NextResponse.json({ error: "首个科研问题正在生成，请稍后重试" }, { status: 409 });
       }
-      if (claim.status === "owner") {
+      if (claim.status === "completed") {
+        controls = await loadQuestionControls(id);
+        control = decideNextQuestion({
+          duration,
+          role: "research",
+          elapsedMs: input.atMs,
+          moduleRemainingMs: remainingMsForRole(duration, "research", input.atMs),
+          controls,
+        });
+      } else if (claim.status === "owner") {
         claimId = claim.claimId;
         try {
           researchInstruction = await buildResearchHandoffInstruction(id);

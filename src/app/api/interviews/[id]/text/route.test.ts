@@ -84,7 +84,7 @@ describe("POST text interview research questions", () => {
   });
 
   it("serializes concurrent first research posts so only one receives the initial instruction", async () => {
-    const id = await createInterview();
+    const id = await createInterview(10);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     createCompletion.mockImplementation(async () => {
@@ -103,11 +103,23 @@ describe("POST text interview research questions", () => {
       call[0].messages[0].content.includes("FIRST_RESEARCH_PROJECT_QUESTION"),
     );
     expect(initialInstructions).toHaveLength(1);
+    const bodies = await Promise.all(responses.map((response) => response.json()));
+    expect(bodies.filter(({ control }) => control.kind === "new_topic")).toHaveLength(1);
+    expect(bodies.filter(({ control }) => control.kind === "follow_up")).toHaveLength(1);
     const claims = await db.select().from(interviewEvents).where(eq(interviewEvents.interviewId, id));
     expect(claims).toContainEqual(expect.objectContaining({
       type: "research_initial_claim",
       payload: { status: "completed", leaseUntil: null },
     }));
+    const researchControls = claims.filter(({ type, payload }) =>
+      type === "question_control"
+      && payload && typeof payload === "object"
+      && "role" in payload && payload.role === "research",
+    );
+    expect(researchControls).toHaveLength(2);
+    expect(researchControls.filter(({ payload }) =>
+      payload && typeof payload === "object" && "kind" in payload && payload.kind === "new_topic",
+    )).toHaveLength(1);
   });
 
   it("releases a failed initial claim so retry receives the initial instruction", async () => {
