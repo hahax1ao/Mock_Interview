@@ -3,10 +3,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseRealtimeServerEvent } from "@/lib/realtime-events";
 import { reconnectDecision } from "@/lib/reconnect-policy";
+import { remainingMsForRole } from "@/domain/interview-plan";
+import {
+  decideNextQuestion,
+  type CoreInterviewRole,
+  type QuestionControl,
+} from "@/domain/question-coverage";
 
 type Role = "chair" | "technical" | "research" | "english";
 type Transcript = { role: Role | "candidate"; text: string; atMs: number; interrupted?: boolean };
 const ROLE_LABEL: Record<Role, string> = { chair: "主考官", technical: "专业基础老师", research: "科研项目导师", english: "英语老师" };
+
+function isCoreRole(role: Role): role is CoreInterviewRole {
+  return role === "technical" || role === "research" || role === "english";
+}
+
+function instructionForControl(control: QuestionControl, research?: string) {
+  if (control.kind === "closing") {
+    return "现在由【主考官】进入最后收尾，只问一个简短总结或补充问题。";
+  }
+  if (control.role === "english" && control.questionText) {
+    return `现在由【英语老师】用英语逐字询问这一题，只问这一题，不得改成专业、论文、项目或技术问题：${control.questionText}`;
+  }
+  const mode = control.kind === "new_topic"
+    ? `开始新的 ${control.topicCategory} 主题`
+    : `围绕当前 ${control.topicCategory} 主题进行第 ${control.followUpDepth} 层追问`;
+  return `现在由【${ROLE_LABEL[control.role]}】${mode}，只问一个问题。${control.role === "research" && research ? `\n${research}` : ""}`;
+}
 
 function floatToPcm16(input: Float32Array, inputRate: number, outputRate = 16000) {
   const ratio = inputRate / outputRate;
@@ -53,7 +76,10 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const eventQueue = useRef<unknown[]>([]);
   const drainPromise = useRef<Promise<void> | null>(null);
   const transcriptRef = useRef<Transcript[]>([]);
-  const topicQuestionDepth = useRef(0);
+  const questionControls = useRef<QuestionControl[]>([]);
+  const interviewDuration = useRef<10 | 20 | 30>(20);
+  const candidateSpeaking = useRef(false);
+  const pendingRole = useRef<Role | null>(null);
   const reconnect = useRef<() => Promise<void>>(async () => undefined);
   const micPermissionSettled = useRef(false);
   const sessionStarted = useRef(false);
@@ -89,13 +115,22 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     try { await run; } finally { drainPromise.current = null; }
   }, [interviewId]);
 
-  const saveEvent = useCallback((event: unknown) => {
+  const enqueueEvent = useCallback((event: unknown) => {
     const envelope = event && typeof event === "object"
       ? { id: crypto.randomUUID(), ...(event as Record<string, unknown>) }
       : event;
     eventQueue.current.push(envelope);
+  }, []);
+
+  const persistEvent = useCallback(async (event: unknown) => {
+    enqueueEvent(event);
+    await drainEvents();
+  }, [drainEvents, enqueueEvent]);
+
+  const saveEvent = useCallback((event: unknown) => {
+    enqueueEvent(event);
     void drainEvents().catch((reason) => setError(reason instanceof Error ? reason.message : "转写保存失败"));
-  }, [drainEvents]);
+  }, [drainEvents, enqueueEvent]);
 
   const flushEvents = useCallback(async () => {
     await drainEvents();
@@ -110,6 +145,52 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     nextPlayAt.current = audio.current?.currentTime ?? 0;
   }, []);
 
+  const issueNextQuestion = useCallback(async (role: CoreInterviewRole) => {
+    const control = decideNextQuestion({
+      duration: interviewDuration.current,
+      role,
+      elapsedMs: elapsedMs.current,
+      moduleRemainingMs: remainingMsForRole(
+        interviewDuration.current,
+        role,
+        elapsedMs.current,
+      ),
+      controls: questionControls.current,
+    });
+    questionControls.current.push(control);
+    await persistEvent({ type: "question_control", payload: control });
+
+    const current = socket.current;
+    if (current?.readyState !== WebSocket.OPEN) return;
+    stopAudio();
+    current.send(JSON.stringify({ type: "response.cancel" }));
+    current.send(JSON.stringify({
+      type: "response.create",
+      response: { instructions: instructionForControl(control, roleInstructions.current.research) },
+    }));
+  }, [persistEvent, stopAudio]);
+
+  const handoffToRole = useCallback((role: Role) => {
+    const previous = lastRole.current;
+    lastRole.current = role;
+    pendingRole.current = null;
+    saveEvent({ type: "handoff", payload: { from: previous, to: role, atMs: elapsedMs.current } });
+    if (isCoreRole(role)) {
+      void issueNextQuestion(role).catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "问题控制保存失败");
+      });
+      return;
+    }
+    if (
+      role === "chair"
+      && isCoreRole(previous)
+      && elapsedMs.current >= interviewDuration.current * 60_000 - 60_000
+    ) {
+      void issueNextQuestion(previous).catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "问题控制保存失败");
+      });
+    }
+  }, [issueNextQuestion, saveEvent]);
   const playAudio = useCallback((encoded: string) => {
     const context = audio.current;
     if (!context) return;
@@ -129,7 +210,6 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
   const persistTranscript = useCallback((role: Transcript["role"], text: string) => {
     const turn = { role, text, atMs: elapsedMs.current };
     transcriptRef.current.push(turn);
-    if (role !== "candidate") topicQuestionDepth.current += 1;
     setTranscripts((items) => [...items, turn]);
     void saveEvent({ type: "transcript", payload: {
       role, startedAtMs: turn.atMs, endedAtMs: turn.atMs, text, confidence: 1, interrupted: false,
@@ -140,34 +220,39 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     if (sessionStarted.current || !sessionReady.current || !micPermissionSettled.current) return;
     sessionStarted.current = true;
     setState(micAvailable.current ? "connected" : "text");
-    void saveEvent({ type: "connection", payload: { state: micAvailable.current ? "connected" : "text-fallback", atMs: elapsedMs.current } });
+    saveEvent({ type: "connection", payload: { state: micAvailable.current ? "connected" : "text-fallback", atMs: elapsedMs.current } });
     const ws = socket.current;
     if (ws?.readyState === WebSocket.OPEN) {
-      const recent = transcriptRef.current.slice(-4).map((turn) => `${turn.role}: ${turn.text}`).join("\n");
-      const roleInstruction = lastRole.current === "research" ? roleInstructions.current.research : undefined;
-      const instructions = (elapsedMs.current === 0
-        ? "你是主考官。现在正式开场，先简短问候，再只问一个自我介绍问题。"
-        : `刚才连接中断。现在由【${ROLE_LABEL[lastRole.current]}】承接已有对话继续，只问一个问题。最近转写：\n${recent}`)
-        + (roleInstruction ? `\n${roleInstruction}` : "");
-      ws.send(JSON.stringify({ type: "response.create", response: { instructions } }));
+      if (elapsedMs.current === 0) {
+        ws.send(JSON.stringify({
+          type: "response.create",
+          response: { instructions: "你是主考官。现在正式开场，先简短问候，再只问一个自我介绍问题。" },
+        }));
+      } else if (isCoreRole(lastRole.current)) {
+        void issueNextQuestion(lastRole.current).catch((reason) => {
+          setError(reason instanceof Error ? reason.message : "问题控制保存失败");
+        });
+      } else {
+        const recent = transcriptRef.current.slice(-4)
+          .map((turn) => `${turn.role}: ${turn.text}`)
+          .join("\n");
+        ws.send(JSON.stringify({
+          type: "response.create",
+          response: { instructions: `刚才连接中断。现在由【${ROLE_LABEL[lastRole.current]}】承接已有对话继续，只问一个问题。最近转写：\n${recent}` },
+        }));
+      }
     }
     if (!timer.current) timer.current = setInterval(() => {
       elapsedMs.current += 1000;
       const role = onElapsed(1000);
-      const current = socket.current;
-      if (role !== lastRole.current && current?.readyState === WebSocket.OPEN) {
-        const previous = lastRole.current;
-        lastRole.current = role;
-        topicQuestionDepth.current = 0;
-        stopAudio();
-        current.send(JSON.stringify({ type: "response.cancel" }));
-        const roleInstruction = role === "research" ? roleInstructions.current.research : undefined;
-        current.send(JSON.stringify({ type: "response.create", response: { instructions: `立即停止当前模块。现在由【${ROLE_LABEL[role]}】继续面试，只问一个问题。${roleInstruction ? `\n${roleInstruction}` : ""}` } }));
-        void saveEvent({ type: "handoff", payload: { from: previous, to: role, atMs: elapsedMs.current } });
+      if (role === lastRole.current) return;
+      if (candidateSpeaking.current) {
+        pendingRole.current = role;
+        return;
       }
+      handoffToRole(role);
     }, 1000);
-  }, [onElapsed, saveEvent, stopAudio]);
-
+  }, [handoffToRole, issueNextQuestion, onElapsed, saveEvent]);
   const handleMessage = useCallback((event: MessageEvent) => {
     let raw: unknown;
     try { raw = JSON.parse(String(event.data)); } catch { return; }
@@ -179,14 +264,21 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     if (parsed.kind === "transcript") {
       const role = parsed.speaker === "candidate" ? "candidate" : lastRole.current;
       persistTranscript(role, parsed.text);
-      if (role === "candidate" && topicQuestionDepth.current >= 3 && socket.current?.readyState === WebSocket.OPEN) {
-        topicQuestionDepth.current = 0;
-        socket.current.send(JSON.stringify({ type: "response.cancel" }));
-        socket.current.send(JSON.stringify({ type: "response.create", response: { instructions: `同一主题已追问三层。现在由【${ROLE_LABEL[lastRole.current]}】切换到一个新主题，只问一个问题。` } }));
+      if (role === "candidate") {
+        candidateSpeaking.current = false;
+        const deferredRole = pendingRole.current;
+        if (deferredRole && deferredRole !== lastRole.current) {
+          handoffToRole(deferredRole);
+        } else if (isCoreRole(lastRole.current)) {
+          void issueNextQuestion(lastRole.current).catch((reason) => {
+            setError(reason instanceof Error ? reason.message : "问题控制保存失败");
+          });
+        }
       }
     }
     if (parsed.kind === "error") setError(parsed.message);
     if (parsed.kind === "speech-started") {
+      candidateSpeaking.current = true;
       stopAudio();
       if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify({ type: "response.cancel" }));
     }
@@ -194,7 +286,7 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       sessionReady.current = true;
       beginSession();
     }
-  }, [beginSession, persistTranscript, playAudio, stopAudio]);
+  }, [beginSession, handoffToRole, issueNextQuestion, persistTranscript, playAudio, stopAudio]);
 
   const connect = useCallback(async () => {
     if (!interviewId) return;
@@ -214,6 +306,12 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     if (!isCurrent()) return;
     if (!response.ok) throw new Error(session.error ?? "无法创建实时会话");
     roleInstructions.current = { ...roleInstructions.current, ...(session.roleInstructions ?? {}) };
+    if (session.duration === 10 || session.duration === 20 || session.duration === 30) {
+      interviewDuration.current = session.duration;
+    }
+    if (Array.isArray(session.questionControls)) {
+      questionControls.current = [...session.questionControls];
+    }
     const context = new AudioContext();
     audio.current = context;
     await context.resume();
@@ -315,7 +413,10 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
     setTranscripts([]);
     transcriptRef.current = [];
     eventQueue.current = [];
-    topicQuestionDepth.current = 0;
+    questionControls.current = [];
+    interviewDuration.current = 20;
+    candidateSpeaking.current = false;
+    pendingRole.current = null;
     reconnectAttempts.current = 0;
     roleInstructions.current = {};
     connectionGeneration.current += 1;

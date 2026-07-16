@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, initDatabase } from "@/db/client";
-import { interviews, materials, profileExperiences } from "@/db/schema";
+import { interviewEvents, interviews, materials, profileExperiences } from "@/db/schema";
+import type { QuestionControl } from "@/domain/question-coverage";
 import { POST } from "./route";
 
 const createdInterviewIds: string[] = [];
@@ -35,7 +36,7 @@ async function createInterviewFixture(withConfirmedExperience: boolean) {
     filePath: "test-only-resume.pdf", createdAt: 1,
   });
   await db.insert(interviews).values({
-    id: interviewId, status: "ready", duration: 1200, focus: "LoRa 通信",
+    id: interviewId, status: "ready", duration: 20, focus: "LoRa 通信",
     pressure: "adaptive", materialIds: [materialId], plan: {}, createdAt: 1,
   });
   if (withConfirmedExperience) {
@@ -48,6 +49,16 @@ async function createInterviewFixture(withConfirmedExperience: boolean) {
     });
   }
   return interviewId;
+}
+
+async function seedControl(interviewId: string, control: QuestionControl) {
+  await db.insert(interviewEvents).values({
+    id: crypto.randomUUID(),
+    interviewId,
+    type: "question_control",
+    payload: control,
+    createdAt: 2,
+  });
 }
 
 function request(interviewId: string) {
@@ -78,5 +89,27 @@ describe("POST realtime session route", () => {
 
     expect(response.status).toBe(200);
     expect(body.roleInstructions).toEqual({});
+  });
+
+  it("returns the interview duration and saved question controls", async () => {
+    const interviewId = await createInterviewFixture(false);
+    const control: QuestionControl = {
+      role: "english",
+      kind: "new_topic",
+      topicId: "english-hometown",
+      topicCategory: "personal",
+      questionId: "english-hometown",
+      questionText: "Introduce your hometown briefly.",
+      followUpDepth: 0,
+      issuedAtMs: 1_020_000,
+    };
+    await seedControl(interviewId, control);
+
+    const response = await POST(request(interviewId));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.duration).toBe(20);
+    expect(body.questionControls).toEqual([control]);
   });
 });
