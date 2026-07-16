@@ -30,6 +30,17 @@ test("configures a 10/20/30 minute interview and shows the enforced plan", async
   await expect(page.getByText("最后一分钟强制收尾")).toBeVisible();
 });
 
+test("shows V1.1 topic targets for each duration", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("V1.1", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "20分钟" }).click();
+  await expect(page.getByText("专业基础 · 2 个主题", { exact: true })).toBeVisible();
+  await expect(page.getByText("科研项目 · 2 个主题", { exact: true })).toBeVisible();
+  await expect(page.getByText("英语交流 · 2 个主题", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "10分钟" }).click();
+  await expect(page.getByText("英语交流 · 1 个主题", { exact: true })).toBeVisible();
+});
+
 test("uploads a local material without navigating away", async ({ page }) => {
   await page.goto("/");
   await page.waitForLoadState("networkidle");

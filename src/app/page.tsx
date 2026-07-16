@@ -300,7 +300,7 @@ export default function Home() {
   return <main className="shell">
     <aside className="sidebar">
       <div className="mark">研</div>
-      <div className="brand"><strong>研面</strong><span>Interview Studio</span></div>
+      <div className="brand"><strong>研面</strong><span>Interview Studio <small>V1.1</small></span></div>
       <nav>
         <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}><i>⌂</i>训练台</button>
         <button className={view === "materials" ? "active" : ""} onClick={() => setView("materials")}><i>▤</i>材料库</button>
@@ -332,7 +332,7 @@ export default function Home() {
 
           <div className="plan card">
             <div className="section-title"><div><span>02</span><h2>本轮流程</h2></div><p>{duration} min</p></div>
-            <div className="timeline">{plan.map((segment, index) => <div className="timeline-item" key={index}><div className="dot">{index + 1}</div><div><b>{segment.label}</b><small>{roleNames[segment.role]}</small></div><time>{segment.minutes}′</time></div>)}</div>
+            <div className="timeline">{plan.map((segment, index) => <div className="timeline-item" key={index}><div className="dot">{index + 1}</div><div><b>{segment.label}{segment.topicTarget ? ` · ${segment.topicTarget} 个主题` : ""}</b><small>{roleNames[segment.role]}</small></div><time>{segment.minutes}′</time></div>)}</div>
             <div className="guardrails"><span>✓ 单主题最多三层追问</span><span>✓ 最后一分钟强制收尾</span><span>✓ 断线自动暂停计时</span></div>
           </div>
         </section>
