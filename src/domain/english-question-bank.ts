@@ -138,7 +138,7 @@ export const englishQuestionBank: readonly EnglishQuestion[] = [
 ] as const;
 
 const forbiddenPatterns = [
-  /\b(major|professional course|favorite subject|professional skills?)\b/i,
+  /\b(major|courses?|favorite subject|(?:professional|programming|hardware) skills?)\b/i,
   /\b(paper|thesis|publication)\b/i,
   /\b(project|competition entry|algorithm|technical details?|circuit|protocol)\b/i,
   /专业课程|专业技能|论文|项目|竞赛|算法|技术细节/,

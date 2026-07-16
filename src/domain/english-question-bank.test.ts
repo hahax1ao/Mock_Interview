@@ -31,6 +31,9 @@ describe("english question bank", () => {
   it.each([
     "Please explain the algorithm in your project.",
     "Introduce your favorite professional course.",
+    "Which course did you enjoy most?",
+    "Describe your programming skills?",
+    "What hardware skills have you developed?",
     "Tell me about your paper.",
     "Describe the technical details of your competition entry.",
   ])("rejects forbidden English prompt: %s", (text) => {
