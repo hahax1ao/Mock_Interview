@@ -34,10 +34,21 @@ describe("english question bank", () => {
     "Which course did you enjoy most?",
     "Describe your programming skills?",
     "What hardware skills have you developed?",
+    "What technical skills have you developed?",
+    "Describe your software development skills?",
     "Tell me about your paper.",
     "Describe the technical details of your competition entry.",
   ])("rejects forbidden English prompt: %s", (text) => {
     expect(isForbiddenEnglishQuestion(text)).toBe(true);
+  });
+
+  it.each([
+    "What personal qualities would help you in future academic research?",
+    "What role do you usually play in a team?",
+    "Talk about your learning methods and how you learn English.",
+    "What abilities help you work well with others?",
+  ])("allows non-skill personal prompts: %s", (text) => {
+    expect(isForbiddenEnglishQuestion(text)).toBe(false);
   });
 
   it("accepts an allowed prompt with exactly one question mark", () => {
