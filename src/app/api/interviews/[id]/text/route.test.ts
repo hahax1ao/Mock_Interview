@@ -43,6 +43,14 @@ async function postText(
   }), { params: Promise.resolve({ id }) });
 }
 
+async function recoverPendingQuestion(id: string, controlId: string, atMs = 100) {
+  return POST(new Request(`http://localhost/api/interviews/${id}/text`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pendingControlId: controlId, atMs }),
+  }), { params: Promise.resolve({ id }) });
+}
+
 async function postResearch(id: string) {
   return postText(id, { text: "candidate answer", role: "research", atMs: 100 });
 }
@@ -425,6 +433,95 @@ describe("POST text interview scheduled questions", () => {
     }));
     expect(body.reply).toContain("completed");
     expect(createCompletion).not.toHaveBeenCalled();
+  });
+
+  it("stops safely when the English question pool is exhausted", async () => {
+    const id = await createInterview(10);
+    for (const [index, question] of englishQuestionBank.entries()) {
+      await seedControl(id, {
+        role: "english",
+        kind: "new_topic",
+        topicId: question.id,
+        topicCategory: question.category,
+        questionId: question.id,
+        questionText: question.text,
+        followUpDepth: 0,
+        issuedAtMs: index,
+      });
+    }
+    const last = englishQuestionBank.at(-1)!;
+    await seedControl(id, {
+      role: "english",
+      kind: "follow_up",
+      topicId: last.id,
+      topicCategory: last.category,
+      questionId: last.id,
+      questionText: last.text,
+      followUpDepth: 3,
+      issuedAtMs: 100,
+    });
+
+    const response = await postText(id, {
+      text: "I learned how to stay calm.",
+      role: "english",
+      atMs: 200,
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.control.kind).toBe("exhausted");
+    expect(body.reply).toBe("This interview module is completed; please wait for the next section.");
+    expect(createCompletion).not.toHaveBeenCalled();
+  });
+
+  it("renders a pending technical control without creating another coverage control", async () => {
+    const id = await createInterview(10);
+    const controlId = crypto.randomUUID();
+    const control: QuestionControl = {
+      role: "technical",
+      kind: "new_topic",
+      topicId: "signals",
+      topicCategory: "signals",
+      followUpDepth: 0,
+      issuedAtMs: 100,
+    };
+    await db.insert(interviewEvents).values({
+      id: controlId,
+      interviewId: id,
+      type: "question_control",
+      payload: control,
+      createdAt: 100,
+    });
+    createCompletion.mockResolvedValueOnce({
+      choices: [{ message: { content: "请解释采样定理及其适用条件。" } }],
+    });
+
+    const response = await recoverPendingQuestion(id, controlId, 200);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      reply: "请解释采样定理及其适用条件。",
+      control,
+    });
+    const events = await db.select().from(interviewEvents)
+      .where(eq(interviewEvents.interviewId, id));
+    expect(events.filter(({ type }) => type === "question_control")).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "question_delivery",
+      payload: expect.objectContaining({ controlId }),
+    }));
+    expect(events.filter(({ type, payload }) =>
+      type === "transcript"
+      && payload && typeof payload === "object"
+      && "role" in payload && payload.role === "candidate",
+    )).toHaveLength(0);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "transcript",
+      payload: expect.objectContaining({
+        role: "technical",
+        text: "请解释采样定理及其适用条件。",
+      }),
+    }));
   });
 
   it("uses a short chair prompt for a closing decision", async () => {

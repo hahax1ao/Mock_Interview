@@ -18,14 +18,22 @@ import { buildResearchHandoffInstruction } from "@/lib/experience-interview";
 import { buildInterviewContext } from "@/lib/interview-context";
 import { interviewerPrompt } from "@/lib/interviewer-prompt";
 import { models } from "@/lib/models";
-import { loadQuestionControls } from "@/lib/question-control-store";
+import {
+  loadQuestionControls,
+  loadQuestionControlSessionState,
+} from "@/lib/question-control-store";
 import { qwenClient } from "@/lib/qwen";
 
-const schema = z.object({
+const answerSchema = z.object({
   text: z.string().trim().min(1).max(4000),
   role: z.enum(["chair", "technical", "research", "english"]),
   atMs: z.number().nonnegative(),
 });
+const pendingSchema = z.object({
+  pendingControlId: z.string().min(1),
+  atMs: z.number().nonnegative(),
+});
+const schema = z.union([answerSchema, pendingSchema]);
 const roleLabel = {
   chair: "主考官",
   technical: "专业基础老师",
@@ -184,6 +192,68 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "场次不存在或已结束" }, { status: 409 });
     }
 
+    if ("pendingControlId" in input) {
+      const sessionState = await loadQuestionControlSessionState(id);
+      const pending = sessionState.pendingControl;
+      if (!pending || pending.id !== input.pendingControlId) {
+        return NextResponse.json({ error: "待恢复问题不存在或已送达" }, { status: 409 });
+      }
+      const control = QuestionControlSchema.parse(pending.control);
+      let reply: string;
+      if (control.role === "english" && control.questionText) {
+        reply = control.questionText;
+      } else if (control.kind === "closing") {
+        reply = await createModelQuestion([{
+          role: "system",
+          content: `${interviewerPrompt}\n当前角色：${roleLabel.chair}。Ask one short closing question and do not provide feedback or scores.`,
+        }], 0.5);
+      } else {
+        const context = await buildInterviewContext(id);
+        const researchInstruction = control.role === "research"
+          ? await buildResearchHandoffInstruction(id)
+          : undefined;
+        reply = await createModelQuestion([{
+          role: "system",
+          content: [
+            interviewerPrompt,
+            `当前角色：${roleLabel[control.role]}。这是文字降级模式，只提出一个可直接回答的问题，不提示答案。`,
+            `问题控制：${control.kind}，主题：${control.topicCategory}。`,
+            context,
+            researchInstruction,
+          ].filter(Boolean).join("\n"),
+        }], 0.5);
+      }
+      if (!reply) throw new Error("百炼未返回面试问题");
+
+      const now = Date.now();
+      await db.transaction(async (tx) => {
+        await tx.insert(interviewEvents).values([
+          {
+            id: crypto.randomUUID(),
+            interviewId: id,
+            type: "transcript",
+            payload: {
+              role: control.role,
+              startedAtMs: input.atMs,
+              endedAtMs: input.atMs,
+              text: reply,
+              confidence: 1,
+              interrupted: false,
+            },
+            createdAt: now,
+          },
+          {
+            id: crypto.randomUUID(),
+            interviewId: id,
+            type: "question_delivery",
+            payload: { controlId: pending.id, deliveredAtMs: input.atMs },
+            createdAt: now + 1,
+          },
+        ]);
+      });
+      return NextResponse.json({ reply, control });
+    }
+
     let claimId: string | undefined;
     let claimType: string | undefined;
     if (input.role !== "chair") {
@@ -232,7 +302,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }
 
       let reply: string;
-      if (control.role === "english" && control.kind === "new_topic") {
+      if (control.kind === "exhausted") {
+        reply = "This interview module is completed; please wait for the next section.";
+      } else if (control.role === "english" && control.kind === "new_topic") {
         if (!control.questionText) throw new Error("英语题库问题缺少文本");
         reply = control.questionText;
       } else if (control.role === "english") {
@@ -257,8 +329,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           };
           reply = fallback.text;
         }
-      } else if (control.kind === "exhausted") {
-        reply = "This interview module is completed; please wait for the next section.";
       } else if (control.kind === "closing") {
         reply = await createModelQuestion([
           {

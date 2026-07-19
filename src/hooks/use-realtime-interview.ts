@@ -219,21 +219,39 @@ export function useRealtimeInterview(interviewId: string | null, onElapsed: (del
       textDeliveredControlIds.current.add(pending.id);
       lastRole.current = pending.control.role;
       if (isCoreRole(pending.control.role)) lastCoreRole.current = pending.control.role;
-      const turn: Transcript = {
-        role: pending.control.role,
-        text: pending.control.questionText
-          ?? instructionForControl(pending.control, roleInstructions.current.research),
-        atMs: elapsedMs.current,
-      };
-      transcriptRef.current.push(turn);
-      setTranscripts((items) => [...items, turn]);
-      void confirmPendingDelivery().catch((reason) => {
-        setError(reason instanceof Error ? reason.message : "Question delivery confirmation failed");
-      });
+      if (pending.control.questionText) {
+        const turn: Transcript = {
+          role: pending.control.role,
+          text: pending.control.questionText,
+          atMs: elapsedMs.current,
+        };
+        transcriptRef.current.push(turn);
+        setTranscripts((items) => [...items, turn]);
+        void confirmPendingDelivery().catch((reason) => {
+          setError(reason instanceof Error ? reason.message : "Question delivery confirmation failed");
+        });
+      } else {
+        const atMs = elapsedMs.current;
+        void fetch(`/api/interviews/${interviewId}/text`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pendingControlId: pending.id, atMs }),
+        }).then(async (response) => {
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error ?? "待恢复问题生成失败");
+          const turn: Transcript = { role: pending.control.role, text: body.reply, atMs };
+          transcriptRef.current.push(turn);
+          setTranscripts((items) => [...items, turn]);
+          if (pendingControl.current?.id === pending.id) pendingControl.current = null;
+        }).catch((reason) => {
+          textDeliveredControlIds.current.delete(pending.id);
+          setError(reason instanceof Error ? reason.message : "待恢复问题生成失败");
+        });
+      }
     }
     setState("text");
     if (message) setError(message);
-  }, [confirmPendingDelivery]);
+  }, [confirmPendingDelivery, interviewId]);
 
   const issueNextQuestion = useCallback(async (role: CoreInterviewRole) => {
     if (textMode.current) return;

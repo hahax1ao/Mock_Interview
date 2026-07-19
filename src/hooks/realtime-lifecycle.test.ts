@@ -502,6 +502,64 @@ describe("realtime async lifecycle", () => {
     act(() => mounted.root.unmount());
   });
 
+  it("asks the text endpoint to render a pending technical control", async () => {
+    const pendingControl = {
+      id: "technical-control-1",
+      control: {
+        role: "technical",
+        kind: "new_topic",
+        topicId: "signals",
+        topicCategory: "signals",
+        followUpDepth: 0,
+        issuedAtMs: 0,
+      },
+    };
+    const textBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/realtime/session") {
+        return sessionResponse({ duration: 10, pendingControl });
+      }
+      if (String(input).endsWith("/text")) {
+        textBodies.push(JSON.parse(String(init?.body)));
+        return {
+          ok: true,
+          json: async () => ({
+            reply: "请解释采样定理及其适用条件。",
+            control: pendingControl.control,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ saved: 1 }) };
+    }));
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+
+    const mounted = mountInterview();
+    await act(async () => mounted.interview.connect());
+    const ws = FakeWebSocket.instances[0];
+    await act(async () => {
+      ws.onmessage?.({ data: JSON.stringify({ type: "session.updated" }) } as MessageEvent);
+    });
+
+    await vi.waitFor(() => expect(mounted.interview.state).toBe("text"));
+    await vi.waitFor(() => expect(textBodies).toContainEqual({
+      pendingControlId: pendingControl.id,
+      atMs: 0,
+    }));
+    await vi.waitFor(() => expect(mounted.interview.transcripts).toContainEqual(expect.objectContaining({
+      role: "technical",
+      text: "请解释采样定理及其适用条件。",
+    })));
+    expect(mounted.interview.transcripts).not.toContainEqual(expect.objectContaining({
+      text: expect.stringContaining("开始新的 signals 主题"),
+    }));
+    act(() => mounted.root.unmount());
+  });
+
   it("does not issue another question after reconnecting with a saved closing control", async () => {
     vi.useFakeTimers();
     const closing = {
